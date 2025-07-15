@@ -279,7 +279,7 @@ def calculate_net_contribution(gross_contribution, exposure_delta, rebalance_cos
     Calculate net contribution by subtracting rebalancing costs
     Matches reference: net = gross - (exposure_delta * rebalance_cost/100)
     """
-    rebalance_costs = exposure_delta * (rebalance_cost)
+    rebalance_costs = exposure_delta * (rebalance_cost/10000)
     net_contribution = gross_contribution - rebalance_costs
     return net_contribution
 
