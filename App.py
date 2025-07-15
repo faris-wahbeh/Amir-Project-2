@@ -467,6 +467,29 @@ def calculate_portfolio_for_period(num_pos, cash_pct, rebal_freq, rebal_cost,
         return None
 
 
+def calculate_volatility(values):
+    """Calculate annualized volatility from portfolio values"""
+    if len(values) < 2:
+        return 0.0
+    
+    # Calculate monthly returns
+    returns = []
+    for i in range(1, len(values)):
+        monthly_return = (values[i] / values[i-1] - 1)
+        returns.append(monthly_return)
+    
+    if len(returns) == 0:
+        return 0.0
+    
+    # Calculate standard deviation of returns
+    returns_std = np.std(returns, ddof=1)
+    
+    # Annualize volatility (multiply by sqrt(12) for monthly data)
+    annualized_volatility = returns_std * np.sqrt(12) * 100
+    
+    return annualized_volatility
+
+
 def calculate_error(strategy, actual):
     if len(strategy) != len(actual) or len(strategy) == 0:
         return float('inf')
@@ -599,7 +622,7 @@ st.plotly_chart(fig, use_container_width=True)
 
 # Metrics
 st.markdown("---")
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 sf = portfolio_value.iloc[-1]
 
 # Handle case where portfolio data is longer than actual data
@@ -607,13 +630,19 @@ if len(portfolio_value) < len(actual):
     af = actual[len(portfolio_value)]
     ar = (af - 100) / 100 * 100
     outperformance_available = True
+    actual_for_volatility = actual[:len(portfolio_value)]
 else:
     # Use the last available actual data point
     af = actual[-1] if actual else 100.0
     ar = (af - 100) / 100 * 100 if actual else 0.0
     outperformance_available = len(actual) > 0
+    actual_for_volatility = actual
 
 sr = (sf - 100) / 100 * 100
+
+# Calculate volatilities
+strategy_volatility = calculate_volatility(portfolio_value.values)
+actual_volatility = calculate_volatility(actual_for_volatility) if actual_for_volatility else 0.0
 
 c1.metric("Strategy Final", f"${sf:.2f}", f"{sr:+.1f}%")
 c2.metric("Actual Final", f"${af:.2f}", f"{ar:+.1f}%")
@@ -623,6 +652,8 @@ else:
     c3.metric("Outperformance", "N/A")
 yrs = len(portfolio_value) / 12
 c4.metric("Annualized", f"{((sf/100)**(1/yrs)-1)*100:.1f}%")
+c5.metric("Strategy Volatility", f"{strategy_volatility:.1f}%")
+c6.metric("Actual Volatility", f"{actual_volatility:.1f}%")
 
 # Monthly Comparison Table
 st.markdown("---")
