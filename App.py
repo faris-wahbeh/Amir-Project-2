@@ -769,7 +769,7 @@ if table_data:
         style_cells, subset=[col for col in df_table.columns if col != 'Year'])
 
     # Display the table with legend
-    st.markdown("**Legend:** T = Theoretical Strategy, A = Actual Returns")
+    st.markdown("**Legend:** T = Theoretical Strategy,  A = Actual Returns")
     st.markdown(
         "🟢 Green = Strategy Outperformed | 🔴 Red = Strategy Underperformed | 🟡 Yellow = Equal Performance"
     )
