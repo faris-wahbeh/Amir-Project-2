@@ -655,6 +655,8 @@ c4.metric("Annualized", f"{((sf/100)**(1/yrs)-1)*100:.1f}%")
 c5.metric("Strategy Volatility", f"{strategy_volatility:.1f}%")
 c6.metric("Actual Volatility", f"{actual_volatility:.1f}%")
 
+st.caption("💡 Volatility is calculated as the annualized standard deviation of monthly returns (std × √12)")
+
 # Monthly Comparison Table
 st.markdown("---")
 st.subheader("Monthly Performance Comparison")
