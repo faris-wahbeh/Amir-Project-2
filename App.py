@@ -580,7 +580,7 @@ def create_optimization_chart(opt):
 
 
 # ─── Main App ─────────────────────────────────────────────────────────────────
-st.title("🚀 Portfolio Strategy Analyzer")
+st.title("Portfolio Strategy Analyzer")
 st.markdown("Analyze and optimize portfolio strategies using historical data")
 st.markdown("---")
 
@@ -613,7 +613,7 @@ c4.metric("Annualized", f"{((sf/100)**(1/yrs)-1)*100:.1f}%")
 
 # Monthly Comparison Table
 st.markdown("---")
-st.subheader("📊 Monthly Performance Comparison")
+st.subheader("Monthly Performance Comparison")
 
 # Create monthly comparison data
 months = [
