@@ -160,39 +160,50 @@ def get_rankings(date, rank_df):
     return rankings
 
 
-def calculate_rebalance_cost(prev_holdings, current_holdings, weights, 
-                            prev_growth_values, portfolio_growth_row):
+def calculate_exposure_delta(portfolio, portfolio_growth, weights, rebalance_frequency):
     """
-    Calculate rebalancing cost based on position changes and growth values
+    Calculate exposure delta following the exact logic from rank_and_exposure_delta
     
-    Returns total exposure delta (summed delta of all position changes)
+    Returns series with summed exposure delta for each date
     """
-    summed_delta = 0.0
+    frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
+    rebalance_period = frequency_mapping[rebalance_frequency]
+    
+    summed_exposure_delta = pd.Series(index=portfolio.index, dtype=float)
     num_positions = len(weights)
     
-    # For each position in the current portfolio
-    for col_index in range(num_positions):
-        reset_value = weights[col_index]  # Target weight after rebalancing
-        stock_name = current_holdings[col_index]
-        
-        # Find previous value of this stock if it was in the portfolio
-        prev_value = None
-        if stock_name in prev_holdings:
-            # Find which position it was in
-            prev_position = prev_holdings.index(stock_name)
-            prev_value = prev_growth_values[prev_position]
-        
-        # Calculate delta
-        if prev_value is None:
-            # New stock - full position size needs to be bought
-            delta = reset_value
+    for i, date in enumerate(portfolio.index):
+        if i == 0:
+            # First period: special case with multiplier
+            summed_delta = 10 * num_positions
+        elif i % rebalance_period == 0:
+            # Rebalancing period: calculate delta
+            summed_delta = 0
+            for col_index in range(num_positions):
+                reset_value = weights[col_index]
+                stock_name = portfolio.iloc[i, col_index]
+                
+                # Find previous value of this stock if it was in the portfolio
+                prev_value = None
+                prev_date = portfolio.index[i - 1]
+                if stock_name in portfolio.loc[prev_date].values:
+                    stock_col_index = portfolio.loc[prev_date].tolist().index(stock_name)
+                    prev_value = portfolio_growth.iloc[i - 1, stock_col_index]
+                
+                # Calculate delta
+                if prev_value is None:
+                    delta = reset_value
+                else:
+                    delta = abs(reset_value - prev_value)
+                
+                summed_delta += delta
         else:
-            # Existing stock - only the difference needs to be traded
-            delta = abs(reset_value - prev_value)
-        
-        summed_delta += delta
+            # Non-rebalancing period: no trading
+            summed_delta = 0
+            
+        summed_exposure_delta.loc[date] = summed_delta
     
-    return summed_delta
+    return summed_exposure_delta
 
 
 def calculate_portfolio_growth(portfolio, portfolio_returns, weights, rebalance_frequency):
@@ -228,78 +239,48 @@ def calculate_portfolio_growth(portfolio, portfolio_returns, weights, rebalance_
     return portfolio_growth
 
 
-def calculate_weighted_returns_with_rebalancing(portfolio, portfolio_returns, weights, 
-                                               rebalance_frequency, rebalance_cost, rank_df):
-    """Calculate returns including rebalancing costs using exposure delta method"""
+def calculate_gross_contribution(portfolio_growth, weights, rebalance_frequency):
+    """
+    Calculate gross contribution (return contribution before costs)
+    Following exact logic from reference code
+    """
     frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
     rebalance_period = frequency_mapping[rebalance_frequency]
     
-    # First calculate portfolio growth to track position values
-    portfolio_growth = calculate_portfolio_growth(portfolio, portfolio_returns, 
-                                                weights, rebalance_frequency)
+    gross_contribution = pd.Series(index=portfolio_growth.index, dtype=float)
+    num_positions = len(weights)
     
-    # Calculate gross contribution (return contribution before costs)
-    gross_contribution = pd.Series(index=portfolio.index, dtype=float)
-    
-    for i, date in enumerate(portfolio.index):
-        if i == 0:
-            # First period: contribution is growth from initial weights
-            contribution = 0
-            for col_index in range(len(weights)):
-                current_value = portfolio_growth.iloc[i, col_index]
-                contribution += current_value - weights[col_index]
-        else:
-            # Subsequent periods: contribution is change from previous period
-            contribution = 0
-            for col_index in range(len(weights)):
-                current_value = portfolio_growth.iloc[i, col_index]
-                prev_value = portfolio_growth.iloc[i - 1, col_index]
-                
-                if i % rebalance_period == 0:
-                    # On rebalance: contribution is from reset weight to current
-                    contribution += current_value - weights[col_index]
-                else:
-                    # No rebalance: simple growth
-                    contribution += current_value - prev_value
+    for i, date in enumerate(portfolio_growth.index):
+        total_contribution = 0
         
-        gross_contribution.loc[date] = contribution
-    
-    # Calculate rebalancing costs
-    rebalance_costs = pd.Series(index=portfolio.index, dtype=float)
-    rebalance_costs.iloc[:] = 0.0  # Initialize with zeros
-    
-    prev_holdings = None
-    
-    for i, date in enumerate(portfolio.index):
-        if i == 0:
-            # First period: assume we need to buy all positions
-            exposure_delta = sum(weights) * 10  # Multiplier as in original code
-            rebalance_costs.loc[date] = exposure_delta * (rebalance_cost / 100)
-        elif i % rebalance_period == 0:
-            # Rebalancing period
-            current_holdings = portfolio.loc[date].tolist()
+        for col_index in range(num_positions):
+            current_value = portfolio_growth.iloc[i, col_index]
             
-            if prev_holdings is not None:
-                # Get the portfolio values just before rebalancing
-                prev_growth_values = portfolio_growth.iloc[i - 1].tolist()
-                
-                # Calculate exposure delta
-                exposure_delta = calculate_rebalance_cost(
-                    prev_holdings, current_holdings, weights,
-                    prev_growth_values, portfolio_growth.iloc[i]
-                )
-                
-                rebalance_costs.loc[date] = exposure_delta * (rebalance_cost / 100)
+            if i == 0:
+                # First period: contribution from initial weight
+                contribution = current_value - weights[col_index]
+            elif i % rebalance_period == 0:
+                # Rebalance period: contribution from reset weight
+                contribution = current_value - weights[col_index]
+            else:
+                # Regular period: contribution from previous value
+                prev_value = portfolio_growth.iloc[i - 1, col_index]
+                contribution = current_value - prev_value
             
-            prev_holdings = current_holdings
-        else:
-            # No rebalancing
-            if prev_holdings is None:
-                prev_holdings = portfolio.loc[date].tolist()
+            total_contribution += contribution
+        
+        gross_contribution.loc[date] = total_contribution
     
-    # Net contribution = gross contribution - rebalancing costs
+    return gross_contribution
+
+
+def calculate_net_contribution(gross_contribution, exposure_delta, rebalance_cost):
+    """
+    Calculate net contribution by subtracting rebalancing costs
+    Matches reference: net = gross - (exposure_delta * rebalance_cost/100)
+    """
+    rebalance_costs = exposure_delta * (rebalance_cost / 100)
     net_contribution = gross_contribution - rebalance_costs
-    
     return net_contribution
 
 
