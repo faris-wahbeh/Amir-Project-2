@@ -726,7 +726,7 @@ else:
 
 # Optimization Section
 st.markdown("---")
-st.subheader("🔍 Find Closest Match to the Actual")
+st.subheader("🔍 Find Closest Match to the Actual Portfolio")
 st.markdown("Find the best parameters for a specific time period")
 o1, o2, o3, o4 = st.columns(4)
 start_month = o1.number_input("Start Month", 0, len(portfolio_value) - 1, 14)
