@@ -733,7 +733,7 @@ start_month = o1.number_input("Start Month", 0, len(portfolio_value) - 1, 14)
 end_month = o2.number_input("End Month", 0, len(portfolio_value) - 1, 30)
 reb_filter = o3.selectbox("Rebalance Filter",
                           ["any", "monthly", "quarterly", "semi-yearly"])
-run_opt = o4.button("🎯 Find Match", type="primary")
+run_opt = o4.button("Find Match", type="primary")
 
 if run_opt:
     if end_month <= start_month:
@@ -745,22 +745,22 @@ if run_opt:
                 opt = find_optimal_parameters(start_month, end_month,
                                               reb_filter)
                 if opt:
-                    st.success("✅ Optimal parameters found!")
+                    st.success("Optimal parameters found!")
                     p1, p2 = st.columns(2)
                     with p1:
-                        st.write("**📊 Optimal Parameters**")
+                        st.write("**Optimal Parameters**")
                         st.write(f"- **Positions:** {opt['num_positions']}")
                         st.write(f"- **Cash %:** {opt['cash_percentage']}%")
                         st.write(
                             f"- **Rebalance:** {opt['rebalance_frequency']}")
                         st.write(f"- **Cost:** {opt['rebalance_cost']:.2f}%")
                     with p2:
-                        st.write("**📈 Performance**")
+                        st.write("**Performance**")
                         st.write(f"- **Error (RMSE):** {opt['error']:.2f}%")
                     st.plotly_chart(create_optimization_chart(opt),
                                     use_container_width=True)
                 else:
-                    st.error("❌ No valid combination found.")
+                    st.error("No valid combination found.")
             except Exception as e:
                 st.error(f"Error during optimization: {str(e)}")
 
