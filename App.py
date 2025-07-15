@@ -90,7 +90,7 @@ def calculate_position_percentages(num_positions, cash_percentage):
     if num_positions <= 5:
         top = 0.3 * investable
     else:
-        top = 0.3 * investable - (num_positions - 5) * 0.03 * investable
+        top = 0.3 * investable - (num_positions - 5) * 0.02 * investable - (15-num_positions)
     n = num_positions
     d = (2 * (top * n) - 2 * investable) / (n * (n - 1)) if n > 1 else 0
     return [top - i * d for i in range(n)]
