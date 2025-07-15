@@ -59,7 +59,7 @@ rebalance_frequency = st.sidebar.selectbox(
 rebalance_cost = st.sidebar.slider("Rebalance Cost (%)",
                                    0.0,
                                    5.0,
-                                   1,10,
+                                   1.10,
                                    0.01,
                                    format="%.2f")
 
