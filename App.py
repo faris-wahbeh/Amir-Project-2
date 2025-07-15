@@ -80,8 +80,11 @@ def load_and_prepare_data():
 @st.cache_data
 def calculate_returns_from_prices(price_df):
     """Calculate daily returns from price data"""
-    returns_df = price_df.pct_change()  # Calculate returns as decimal
+    returns_df = price_df.pct_change(fill_method=None)  # Calculate returns as decimal
     returns_df = returns_df.fillna(0)  # Fill NaN values with 0
+    # Convert to percentage strings to match reference logic
+    returns_df = returns_df * 100
+    returns_df = returns_df.astype(str) + '%'
     return returns_df
 
 
@@ -106,21 +109,25 @@ def generate_portfolio(rank_df, number_of_positions, rebalance_frequency):
 def get_portfolio_returns(portfolio, returns_df):
     """Get returns for each position in the portfolio"""
     portfolio_returns = pd.DataFrame(index=portfolio.index, 
-                                   columns=portfolio.columns, 
-                                   dtype=float)
+                                   columns=portfolio.columns)
     
-    for date in portfolio.index:
+    portfolio_dates = portfolio.index
+    returns_dates = returns_df.index
+    min_length = min(len(portfolio_dates), len(returns_dates))
+    
+    for date in portfolio_dates[:min_length]:
         if date in returns_df.index:
-            holdings = portfolio.loc[date]
-            daily_returns = []
+            portfolio_row = portfolio.loc[date]
+            current_returns = []
             
-            for ticker in holdings:
-                if pd.notna(ticker) and ticker in returns_df.columns:
-                    daily_returns.append(returns_df.at[date, ticker])
+            for position in portfolio_row:
+                if position in returns_df.columns:
+                    return_value = returns_df.at[date, position]
+                    current_returns.append(return_value)
                 else:
-                    daily_returns.append(0.0)
+                    current_returns.append(None)
                     
-            portfolio_returns.loc[date] = daily_returns
+            portfolio_returns.loc[date] = current_returns
     
     return portfolio_returns
 
@@ -169,6 +176,8 @@ def calculate_exposure_delta(portfolio, portfolio_growth, weights, rebalance_fre
     frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
     rebalance_period = frequency_mapping[rebalance_frequency]
     
+    # Convert weights to percentage form to match reference
+    reset_percentages = [w * 100 for w in weights]
     summed_exposure_delta = pd.Series(index=portfolio.index, dtype=float)
     num_positions = len(weights)
     
@@ -180,7 +189,7 @@ def calculate_exposure_delta(portfolio, portfolio_growth, weights, rebalance_fre
             # Rebalancing period: calculate delta
             summed_delta = 0
             for col_index in range(num_positions):
-                reset_value = weights[col_index]
+                reset_value = reset_percentages[col_index]
                 stock_name = portfolio.iloc[i, col_index]
                 
                 # Find previous value of this stock if it was in the portfolio
@@ -217,8 +226,8 @@ def calculate_portfolio_growth(portfolio, portfolio_returns, weights, rebalance_
     
     for i, date in enumerate(portfolio.index):
         if i % rebalance_period == 0:
-            # Rebalance: reset to target weights
-            current_percentages = weights.copy()
+            # Rebalance: reset to target weights (convert to percentage form)
+            current_percentages = [w * 100 for w in weights]
         else:
             # No rebalance: use previous values
             current_percentages = portfolio_growth.iloc[i - 1].tolist()
@@ -227,8 +236,14 @@ def calculate_portfolio_growth(portfolio, portfolio_returns, weights, rebalance_
         current_growth = []
         for col_index in range(len(weights)):
             return_value = portfolio_returns.iloc[i, col_index]
-            if pd.isna(return_value):
+            
+            # Handle string percentage conversion like in reference
+            if isinstance(return_value, str):
+                return_value = float(return_value.strip('%')) / 100
+            elif return_value is None or pd.isna(return_value):
                 return_value = 0
+            else:
+                return_value = return_value / 100  # Convert from percentage to decimal
             
             # Apply return to current percentage
             new_value = current_percentages[col_index] * (1 + return_value)
@@ -247,6 +262,8 @@ def calculate_gross_contribution(portfolio_growth, weights, rebalance_frequency)
     frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
     rebalance_period = frequency_mapping[rebalance_frequency]
     
+    # Convert weights to percentage form to match reference
+    reset_percentages = [w * 100 for w in weights]
     gross_contribution = pd.Series(index=portfolio_growth.index, dtype=float)
     num_positions = len(weights)
     
@@ -258,10 +275,10 @@ def calculate_gross_contribution(portfolio_growth, weights, rebalance_frequency)
             
             if i == 0:
                 # First period: contribution from initial weight
-                contribution = current_value - weights[col_index]
+                contribution = current_value - reset_percentages[col_index]
             elif i % rebalance_period == 0:
                 # Rebalance period: contribution from reset weight
-                contribution = current_value - weights[col_index]
+                contribution = current_value - reset_percentages[col_index]
             else:
                 # Regular period: contribution from previous value
                 prev_value = portfolio_growth.iloc[i - 1, col_index]
@@ -279,7 +296,7 @@ def calculate_net_contribution(gross_contribution, exposure_delta, rebalance_cos
     Calculate net contribution by subtracting rebalancing costs
     Matches reference: net = gross - (exposure_delta * rebalance_cost/100)
     """
-    rebalance_costs = exposure_delta * (rebalance_cost/10000)
+    rebalance_costs = exposure_delta * (rebalance_cost / 100)
     net_contribution = gross_contribution - rebalance_costs
     return net_contribution
 
@@ -321,8 +338,8 @@ def calculate_weighted_returns_with_rebalancing(portfolio, portfolio_returns, we
     # Calculate net contribution (after rebalancing costs)
     net_contribution = calculate_net_contribution(gross_contribution, exposure_delta, rebalance_cost)
     
-    # Convert to percentage form (multiply by 100)
-    return net_contribution * 100
+    # Return net contribution (already in correct form)
+    return net_contribution
 
 
 def calculate_portfolio_performance():
@@ -352,16 +369,16 @@ def calculate_portfolio_performance():
         rebalance_frequency, rebalance_cost, rank_df
     )
     
-    # Convert to percentage form for compounding (already in percentage from function)
+    # Convert to percentage form for compounding - net_contribution is already in percentage form
     net_contribution_pct = net_contribution / 100
     
     # Calculate cumulative portfolio value starting at 100
     portfolio_value = pd.Series(index=portfolio.index, dtype=float)
-    value = 100.0
+    investment_value = 100.0
     
     for date, contribution in net_contribution_pct.items():
-        value *= (1 + contribution)
-        portfolio_value.loc[date] = value
+        investment_value *= (1 + contribution)
+        portfolio_value.loc[date] = investment_value
     
     return portfolio_value, portfolio
 
