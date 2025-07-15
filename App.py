@@ -70,10 +70,10 @@ def load_and_prepare_data():
     """Load rank and price data from CSV files"""
     # Load rank data (tickers by date)
     rank_df = pd.read_csv('Rank.csv', index_col=0, parse_dates=True, dayfirst=True)
-    
+
     # Load price data
     price_df = pd.read_csv('Prices.csv', index_col=0, parse_dates=True, dayfirst=True)
-    
+
     return rank_df, price_df
 
 
@@ -93,16 +93,16 @@ def generate_portfolio(rank_df, number_of_positions, rebalance_frequency):
     """Select top N holdings based on rank data"""
     frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
     rebalance_period = frequency_mapping[rebalance_frequency]
-    
+
     portfolio = pd.DataFrame(index=rank_df.index, columns=range(number_of_positions))
     current_holdings = []
-    
+
     for i, (date, row) in enumerate(rank_df.iterrows()):
         if i % rebalance_period == 0:
             # Get the ticker names for top N positions from the rank columns
             current_holdings = row.iloc[:number_of_positions].tolist()
         portfolio.loc[date] = current_holdings
-    
+
     return portfolio
 
 
@@ -110,46 +110,46 @@ def get_portfolio_returns(portfolio, returns_df):
     """Get returns for each position in the portfolio"""
     portfolio_returns = pd.DataFrame(index=portfolio.index, 
                                    columns=portfolio.columns)
-    
+
     portfolio_dates = portfolio.index
     returns_dates = returns_df.index
     min_length = min(len(portfolio_dates), len(returns_dates))
-    
+
     for date in portfolio_dates[:min_length]:
         if date in returns_df.index:
             portfolio_row = portfolio.loc[date]
             current_returns = []
-            
+
             for position in portfolio_row:
                 if position in returns_df.columns:
                     return_value = returns_df.at[date, position]
                     current_returns.append(return_value)
                 else:
                     current_returns.append(None)
-                    
+
             portfolio_returns.loc[date] = current_returns
-    
+
     return portfolio_returns
 
 
 def calculate_position_weights(num_positions, cash_percentage):
     """Calculate position weights with linear decrease"""
     investable = 100.0 - cash_percentage
-    
+
     if num_positions <= 5:
         top_weight = 0.3 * investable
     else:
         top_weight = 0.3 * investable - (num_positions - 5) * 0.02 * investable - (15 - num_positions)
-    
+
     if num_positions > 1:
         # Calculate linear decrease
         total_decrease = 2 * (top_weight * num_positions - investable)
         decrease_per_position = total_decrease / (num_positions * (num_positions - 1))
-        
+
         weights = [top_weight - i * decrease_per_position for i in range(num_positions)]
     else:
         weights = [investable]
-    
+
     # Convert to decimal form
     return [w / 100.0 for w in weights]
 
@@ -157,30 +157,30 @@ def calculate_position_weights(num_positions, cash_percentage):
 def get_rankings(date, rank_df):
     """Get ticker rankings for a specific date"""
     rankings = {}
-    
+
     if date in rank_df.index:
         row = rank_df.loc[date]
         for rank, ticker in enumerate(row.values, 1):
             if pd.notna(ticker) and str(ticker).strip():
                 rankings[str(ticker).strip()] = rank
-    
+
     return rankings
 
 
 def calculate_exposure_delta(portfolio, portfolio_growth, weights, rebalance_frequency):
     """
     Calculate exposure delta following the exact logic from rank_and_exposure_delta
-    
+
     Returns series with summed exposure delta for each date
     """
     frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
     rebalance_period = frequency_mapping[rebalance_frequency]
-    
+
     # Convert weights to percentage form to match reference
     reset_percentages = [w * 100 for w in weights]
     summed_exposure_delta = pd.Series(index=portfolio.index, dtype=float)
     num_positions = len(weights)
-    
+
     for i, date in enumerate(portfolio.index):
         if i == 0:
             # First period: special case with multiplier
@@ -191,27 +191,27 @@ def calculate_exposure_delta(portfolio, portfolio_growth, weights, rebalance_fre
             for col_index in range(num_positions):
                 reset_value = reset_percentages[col_index]
                 stock_name = portfolio.iloc[i, col_index]
-                
+
                 # Find previous value of this stock if it was in the portfolio
                 prev_value = None
                 prev_date = portfolio.index[i - 1]
                 if stock_name in portfolio.loc[prev_date].values:
                     stock_col_index = portfolio.loc[prev_date].tolist().index(stock_name)
                     prev_value = portfolio_growth.iloc[i - 1, stock_col_index]
-                
+
                 # Calculate delta
                 if prev_value is None:
                     delta = reset_value
                 else:
                     delta = abs(reset_value - prev_value)
-                
+
                 summed_delta += delta
         else:
             # Non-rebalancing period: no trading
             summed_delta = 0
-            
+
         summed_exposure_delta.loc[date] = summed_delta
-    
+
     return summed_exposure_delta
 
 
@@ -219,11 +219,11 @@ def calculate_portfolio_growth(portfolio, portfolio_returns, weights, rebalance_
     """Calculate portfolio growth values tracking position sizes over time"""
     frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
     rebalance_period = frequency_mapping[rebalance_frequency]
-    
+
     portfolio_growth = pd.DataFrame(index=portfolio.index, 
                                   columns=portfolio.columns, 
                                   dtype=float)
-    
+
     for i, date in enumerate(portfolio.index):
         if i % rebalance_period == 0:
             # Rebalance: reset to target weights (convert to percentage form)
@@ -231,12 +231,12 @@ def calculate_portfolio_growth(portfolio, portfolio_returns, weights, rebalance_
         else:
             # No rebalance: use previous values
             current_percentages = portfolio_growth.iloc[i - 1].tolist()
-        
+
         # Apply returns to get new values
         current_growth = []
         for col_index in range(len(weights)):
             return_value = portfolio_returns.iloc[i, col_index]
-            
+
             # Handle string percentage conversion like in reference
             if isinstance(return_value, str):
                 return_value = float(return_value.strip('%')) / 100
@@ -244,13 +244,13 @@ def calculate_portfolio_growth(portfolio, portfolio_returns, weights, rebalance_
                 return_value = 0
             else:
                 return_value = return_value / 100  # Convert from percentage to decimal
-            
+
             # Apply return to current percentage
             new_value = current_percentages[col_index] * (1 + return_value)
             current_growth.append(new_value)
-        
+
         portfolio_growth.iloc[i] = current_growth
-    
+
     return portfolio_growth
 
 
@@ -261,18 +261,18 @@ def calculate_gross_contribution(portfolio_growth, weights, rebalance_frequency)
     """
     frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
     rebalance_period = frequency_mapping[rebalance_frequency]
-    
+
     # Convert weights to percentage form to match reference
     reset_percentages = [w * 100 for w in weights]
     gross_contribution = pd.Series(index=portfolio_growth.index, dtype=float)
     num_positions = len(weights)
-    
+
     for i, date in enumerate(portfolio_growth.index):
         total_contribution = 0
-        
+
         for col_index in range(num_positions):
             current_value = portfolio_growth.iloc[i, col_index]
-            
+
             if i == 0:
                 # First period: contribution from initial weight
                 contribution = current_value - reset_percentages[col_index]
@@ -283,11 +283,11 @@ def calculate_gross_contribution(portfolio_growth, weights, rebalance_frequency)
                 # Regular period: contribution from previous value
                 prev_value = portfolio_growth.iloc[i - 1, col_index]
                 contribution = current_value - prev_value
-            
+
             total_contribution += contribution
-        
+
         gross_contribution.loc[date] = total_contribution
-    
+
     return gross_contribution
 
 
@@ -328,58 +328,58 @@ def calculate_weighted_returns_with_rebalancing(portfolio, portfolio_returns, we
     """
     # Calculate portfolio growth (position values over time)
     portfolio_growth = calculate_portfolio_growth(portfolio, portfolio_returns, weights, rebalance_frequency)
-    
+
     # Calculate exposure delta (trading costs)
     exposure_delta = calculate_exposure_delta(portfolio, portfolio_growth, weights, rebalance_frequency)
-    
+
     # Calculate gross contribution (returns before costs)
     gross_contribution = calculate_gross_contribution(portfolio_growth, weights, rebalance_frequency)
-    
+
     # Calculate net contribution (after rebalancing costs)
     net_contribution = calculate_net_contribution(gross_contribution, exposure_delta, rebalance_cost)
-    
+
     # Return net contribution (already in correct form)
     return net_contribution
 
 
 def calculate_portfolio_performance():
     """Main function to calculate portfolio performance"""
-    
+
     # Check files exist
     check_required_files()
-    
+
     # Load data
     rank_df, price_df = load_and_prepare_data()
-    
+
     # Calculate returns from prices
     returns_df = calculate_returns_from_prices(price_df)
-    
+
     # Generate portfolio based on rankings
     portfolio = generate_portfolio(rank_df, num_positions, rebalance_frequency)
-    
+
     # Get returns for portfolio positions
     portfolio_returns = get_portfolio_returns(portfolio, returns_df)
-    
+
     # Calculate position weights
     weights = calculate_position_weights(num_positions, cash_percentage)
-    
+
     # Calculate net contribution with rebalancing costs
     net_contribution = calculate_weighted_returns_with_rebalancing(
         portfolio, portfolio_returns, weights, 
         rebalance_frequency, rebalance_cost, rank_df
     )
-    
+
     # Convert to percentage form for compounding - net_contribution is already in percentage form
     net_contribution_pct = net_contribution / 100
-    
+
     # Calculate cumulative portfolio value starting at 100
     portfolio_value = pd.Series(index=portfolio.index, dtype=float)
     investment_value = 100.0
-    
+
     for date, contribution in net_contribution_pct.items():
         investment_value *= (1 + contribution)
         portfolio_value.loc[date] = investment_value
-    
+
     return portfolio_value, portfolio
 
 
@@ -418,32 +418,32 @@ def calculate_portfolio_for_period(num_pos, cash_pct, rebal_freq, rebal_cost,
     try:
         # Load data
         rank_df, price_df = load_and_prepare_data()
-        
+
         # Calculate returns from prices
         returns_df = calculate_returns_from_prices(price_df)
-        
+
         # Generate portfolio based on rankings
         portfolio = generate_portfolio(rank_df, num_pos, rebal_freq)
-        
+
         # Get returns for portfolio positions
         portfolio_returns = get_portfolio_returns(portfolio, returns_df)
-        
+
         # Calculate position weights
         weights = calculate_position_weights(num_pos, cash_pct)
-        
+
         # Calculate net contribution with rebalancing costs
         net_contribution = calculate_weighted_returns_with_rebalancing(
             portfolio, portfolio_returns, weights, 
             rebal_freq, rebal_cost, rank_df
         )
-        
+
         # Convert to percentage form for compounding
         net_contribution_pct = net_contribution / 100
-        
+
         # Calculate cumulative portfolio value
         portfolio_value = pd.Series(index=portfolio.index, dtype=float)
         value = 100.0
-        
+
         for date, contribution in net_contribution_pct.items():
             value *= (1 + contribution)
             portfolio_value.loc[date] = value
@@ -601,13 +601,26 @@ st.plotly_chart(fig, use_container_width=True)
 st.markdown("---")
 c1, c2, c3, c4 = st.columns(4)
 sf = portfolio_value.iloc[-1]
-af = actual[len(portfolio_value)]
+
+# Handle case where portfolio data is longer than actual data
+if len(portfolio_value) < len(actual):
+    af = actual[len(portfolio_value)]
+    ar = (af - 100) / 100 * 100
+    outperformance_available = True
+else:
+    # Use the last available actual data point
+    af = actual[-1] if actual else 100.0
+    ar = (af - 100) / 100 * 100 if actual else 0.0
+    outperformance_available = len(actual) > 0
+
 sr = (sf - 100) / 100 * 100
-ar = (af - 100) / 100 * 100
 
 c1.metric("Strategy Final", f"${sf:.2f}", f"{sr:+.1f}%")
 c2.metric("Actual Final", f"${af:.2f}", f"{ar:+.1f}%")
-c3.metric("Outperformance", f"{(sr-ar):+.1f}%")
+if outperformance_available:
+    c3.metric("Outperformance", f"{(sr-ar):+.1f}%")
+else:
+    c3.metric("Outperformance", "N/A")
 yrs = len(portfolio_value) / 12
 c4.metric("Annualized", f"{((sf/100)**(1/yrs)-1)*100:.1f}%")
 
@@ -646,7 +659,7 @@ for year in years:
         if month_idx < len(gross_returns) and month_idx < len(strategy_monthly_returns):
             actual_ret = gross_returns[month_idx]
             strategy_ret = strategy_monthly_returns[month_idx]
-            
+
             year_strategy_returns.append(strategy_ret)
             year_actual_returns.append(actual_ret)
 
@@ -654,11 +667,19 @@ for year in years:
             cell_value = f"T: {strategy_ret:.1f}%\nA: {actual_ret:.1f}%"
             year_data[month] = cell_value
             month_idx += 1
+        elif month_idx < len(strategy_monthly_returns):
+            # Only strategy data available (new data beyond actual)
+            strategy_ret = strategy_monthly_returns[month_idx]
+            year_strategy_returns.append(strategy_ret)
+
+            cell_value = f"T: {strategy_ret:.1f}%\nA: N/A"
+            year_data[month] = cell_value
+            month_idx += 1
         elif month_idx < len(gross_returns):
             # Only actual data available
             actual_ret = gross_returns[month_idx]
             year_actual_returns.append(actual_ret)
-            
+
             cell_value = f"T: N/A\nA: {actual_ret:.1f}%"
             year_data[month] = cell_value
             month_idx += 1
