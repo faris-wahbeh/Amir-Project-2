@@ -161,90 +161,146 @@ def get_rankings(date, rank_df):
 
 
 def calculate_rebalance_cost(prev_holdings, current_holdings, weights, 
-                            prev_date, current_date, rank_df):
+                            prev_growth_values, portfolio_growth_row):
     """
-    Calculate rebalancing cost based on position changes
+    Calculate rebalancing cost based on position changes and growth values
     
-    Returns total weight subject to rebalancing cost
+    Returns total exposure delta (summed delta of all position changes)
     """
-    total_cost = 0.0
+    summed_delta = 0.0
+    num_positions = len(weights)
     
-    # Get rankings for both periods
-    prev_ranks = get_rankings(prev_date, rank_df)
-    curr_ranks = get_rankings(current_date, rank_df)
-    
-    # Track which positions from previous holdings are still present
-    prev_set = set(prev_holdings)
-    curr_set = set(current_holdings)
-    
-    # Check each current position
-    for i, ticker in enumerate(current_holdings):
-        current_weight = weights[i]
+    # For each position in the current portfolio
+    for col_index in range(num_positions):
+        reset_value = weights[col_index]  # Target weight after rebalancing
+        stock_name = current_holdings[col_index]
         
-        if ticker in prev_set:
-            # Stock was in previous portfolio
-            prev_position = prev_holdings.index(ticker)
-            prev_weight = weights[prev_position]
-            
-            # Check if ranking changed
-            prev_rank = prev_ranks.get(ticker, float('inf'))
-            curr_rank = curr_ranks.get(ticker, float('inf'))
-            
-            if prev_rank != curr_rank:
-                # Ranking changed - charge for weight difference
-                weight_change = abs(current_weight - prev_weight)
-                total_cost += weight_change
+        # Find previous value of this stock if it was in the portfolio
+        prev_value = None
+        if stock_name in prev_holdings:
+            # Find which position it was in
+            prev_position = prev_holdings.index(stock_name)
+            prev_value = prev_growth_values[prev_position]
+        
+        # Calculate delta
+        if prev_value is None:
+            # New stock - full position size needs to be bought
+            delta = reset_value
         else:
-            # New stock in portfolio - charge for entire weight
-            total_cost += current_weight
+            # Existing stock - only the difference needs to be traded
+            delta = abs(reset_value - prev_value)
+        
+        summed_delta += delta
     
-    # Account for stocks removed from portfolio
-    for i, ticker in enumerate(prev_holdings):
-        if ticker not in curr_set:
-            # Stock was removed - charge for entire previous weight
-            total_cost += weights[i]
+    return summed_delta
+
+
+def calculate_portfolio_growth(portfolio, portfolio_returns, weights, rebalance_frequency):
+    """Calculate portfolio growth values tracking position sizes over time"""
+    frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
+    rebalance_period = frequency_mapping[rebalance_frequency]
     
-    return total_cost
+    portfolio_growth = pd.DataFrame(index=portfolio.index, 
+                                  columns=portfolio.columns, 
+                                  dtype=float)
+    
+    for i, date in enumerate(portfolio.index):
+        if i % rebalance_period == 0:
+            # Rebalance: reset to target weights
+            current_percentages = weights.copy()
+        else:
+            # No rebalance: use previous values
+            current_percentages = portfolio_growth.iloc[i - 1].tolist()
+        
+        # Apply returns to get new values
+        current_growth = []
+        for col_index in range(len(weights)):
+            return_value = portfolio_returns.iloc[i, col_index]
+            if pd.isna(return_value):
+                return_value = 0
+            
+            # Apply return to current percentage
+            new_value = current_percentages[col_index] * (1 + return_value)
+            current_growth.append(new_value)
+        
+        portfolio_growth.iloc[i] = current_growth
+    
+    return portfolio_growth
 
 
 def calculate_weighted_returns_with_rebalancing(portfolio, portfolio_returns, weights, 
                                                rebalance_frequency, rebalance_cost, rank_df):
-    """Calculate weighted returns including rebalancing costs"""
+    """Calculate returns including rebalancing costs using exposure delta method"""
     frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
     rebalance_period = frequency_mapping[rebalance_frequency]
     
-    weighted_returns = pd.DataFrame(index=portfolio.index, 
-                                  columns=portfolio.columns, 
-                                  dtype=float)
+    # First calculate portfolio growth to track position values
+    portfolio_growth = calculate_portfolio_growth(portfolio, portfolio_returns, 
+                                                weights, rebalance_frequency)
+    
+    # Calculate gross contribution (return contribution before costs)
+    gross_contribution = pd.Series(index=portfolio.index, dtype=float)
+    
+    for i, date in enumerate(portfolio.index):
+        if i == 0:
+            # First period: contribution is growth from initial weights
+            contribution = 0
+            for col_index in range(len(weights)):
+                current_value = portfolio_growth.iloc[i, col_index]
+                contribution += current_value - weights[col_index]
+        else:
+            # Subsequent periods: contribution is change from previous period
+            contribution = 0
+            for col_index in range(len(weights)):
+                current_value = portfolio_growth.iloc[i, col_index]
+                prev_value = portfolio_growth.iloc[i - 1, col_index]
+                
+                if i % rebalance_period == 0:
+                    # On rebalance: contribution is from reset weight to current
+                    contribution += current_value - weights[col_index]
+                else:
+                    # No rebalance: simple growth
+                    contribution += current_value - prev_value
+        
+        gross_contribution.loc[date] = contribution
+    
+    # Calculate rebalancing costs
+    rebalance_costs = pd.Series(index=portfolio.index, dtype=float)
+    rebalance_costs.iloc[:] = 0.0  # Initialize with zeros
     
     prev_holdings = None
-    prev_date = None
     
-    for idx, date in enumerate(portfolio.index):
-        # Calculate base weighted returns
-        daily_returns = portfolio_returns.loc[date].values
-        weighted_returns.loc[date] = weights * daily_returns
-        
-        # Apply rebalancing cost if it's a rebalancing period
-        if idx % rebalance_period == 0 and idx > 0 and prev_holdings is not None:
+    for i, date in enumerate(portfolio.index):
+        if i == 0:
+            # First period: assume we need to buy all positions
+            exposure_delta = sum(weights) * 10  # Multiplier as in original code
+            rebalance_costs.loc[date] = exposure_delta * (rebalance_cost / 100)
+        elif i % rebalance_period == 0:
+            # Rebalancing period
             current_holdings = portfolio.loc[date].tolist()
             
-            # Calculate rebalancing cost
-            rebalance_impact = calculate_rebalance_cost(
-                prev_holdings, current_holdings, weights, 
-                prev_date, date, rank_df
-            )
+            if prev_holdings is not None:
+                # Get the portfolio values just before rebalancing
+                prev_growth_values = portfolio_growth.iloc[i - 1].tolist()
+                
+                # Calculate exposure delta
+                exposure_delta = calculate_rebalance_cost(
+                    prev_holdings, current_holdings, weights,
+                    prev_growth_values, portfolio_growth.iloc[i]
+                )
+                
+                rebalance_costs.loc[date] = exposure_delta * (rebalance_cost / 100)
             
-            # Apply cost as a reduction to returns
-            cost_factor = rebalance_impact * (rebalance_cost / 100)
-            weighted_returns.loc[date] *= (1 - cost_factor)
-        
-        # Update previous holdings for next rebalancing
-        if idx % rebalance_period == 0:
-            prev_holdings = portfolio.loc[date].tolist()
-            prev_date = date
+            prev_holdings = current_holdings
+        else:
+            # No rebalancing
+            if prev_holdings is None:
+                prev_holdings = portfolio.loc[date].tolist()
     
-    return weighted_returns
+    # Net contribution = gross contribution - rebalancing costs
+    net_contribution = gross_contribution - rebalance_costs
+    
+    return net_contribution
 
 
 @st.cache_data
@@ -287,17 +343,22 @@ def calculate_portfolio_performance():
     # Calculate position weights
     weights = calculate_position_weights(num_positions, cash_percentage)
     
-    # Calculate weighted returns with rebalancing costs
-    weighted_returns = calculate_weighted_returns_with_rebalancing(
+    # Calculate net contribution with rebalancing costs
+    net_contribution = calculate_weighted_returns_with_rebalancing(
         portfolio, portfolio_returns, weights, 
         rebalance_frequency, rebalance_cost, rank_df
     )
     
-    # Calculate daily portfolio returns (sum across all positions)
-    daily_returns = weighted_returns.sum(axis=1)
+    # Convert to percentage form for compounding
+    net_contribution_pct = net_contribution / 100
     
     # Calculate cumulative portfolio value starting at 100
-    portfolio_value = 100 * (1 + daily_returns).cumprod()
+    portfolio_value = pd.Series(index=portfolio.index, dtype=float)
+    value = 100.0
+    
+    for date, contribution in net_contribution_pct.items():
+        value *= (1 + contribution)
+        portfolio_value.loc[date] = value
     
     return portfolio_value, portfolio
 
@@ -350,27 +411,32 @@ def calculate_portfolio_for_period(num_pos, cash_pct, rebal_freq, rebal_cost,
         # Calculate position weights
         weights = calculate_position_weights(num_pos, cash_pct)
         
-        # Calculate weighted returns with rebalancing costs
-        weighted_returns = calculate_weighted_returns_with_rebalancing(
+        # Calculate net contribution with rebalancing costs
+        net_contribution = calculate_weighted_returns_with_rebalancing(
             portfolio, portfolio_returns, weights, 
             rebal_freq, rebal_cost, rank_df
         )
         
-        # Calculate daily portfolio returns
-        daily_returns = weighted_returns.sum(axis=1)
+        # Convert to percentage form for compounding
+        net_contribution_pct = net_contribution / 100
         
         # Calculate cumulative portfolio value
-        value = 100 * (1 + daily_returns).cumprod()
+        portfolio_value = pd.Series(index=portfolio.index, dtype=float)
+        value = 100.0
+        
+        for date, contribution in net_contribution_pct.items():
+            value *= (1 + contribution)
+            portfolio_value.loc[date] = value
 
         # Extract the period
-        max_idx = len(value) - 1
+        max_idx = len(portfolio_value) - 1
         start_idx = min(start_m, max_idx)
         end_idx = min(end_m, max_idx)
 
         if start_idx > end_idx:
             return None
 
-        series = value.iloc[start_idx:end_idx + 1].values
+        series = portfolio_value.iloc[start_idx:end_idx + 1].values
         if len(series) > 0:
             # Normalize to start at 100
             series = series * 100 / series[0]
