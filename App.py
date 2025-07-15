@@ -303,6 +303,28 @@ def get_actual_gross_returns():
     return seq
 
 
+def calculate_weighted_returns_with_rebalancing(portfolio, portfolio_returns, weights, 
+                                                      rebalance_frequency, rebalance_cost, rank_df):
+    """
+    Calculate weighted returns with rebalancing costs
+    Returns net contribution in percentage form
+    """
+    # Calculate portfolio growth (position values over time)
+    portfolio_growth = calculate_portfolio_growth(portfolio, portfolio_returns, weights, rebalance_frequency)
+    
+    # Calculate exposure delta (trading costs)
+    exposure_delta = calculate_exposure_delta(portfolio, portfolio_growth, weights, rebalance_frequency)
+    
+    # Calculate gross contribution (returns before costs)
+    gross_contribution = calculate_gross_contribution(portfolio_growth, weights, rebalance_frequency)
+    
+    # Calculate net contribution (after rebalancing costs)
+    net_contribution = calculate_net_contribution(gross_contribution, exposure_delta, rebalance_cost)
+    
+    # Convert to percentage form (multiply by 100)
+    return net_contribution * 100
+
+
 def calculate_portfolio_performance():
     """Main function to calculate portfolio performance"""
     
@@ -330,7 +352,7 @@ def calculate_portfolio_performance():
         rebalance_frequency, rebalance_cost, rank_df
     )
     
-    # Convert to percentage form for compounding
+    # Convert to percentage form for compounding (already in percentage from function)
     net_contribution_pct = net_contribution / 100
     
     # Calculate cumulative portfolio value starting at 100
