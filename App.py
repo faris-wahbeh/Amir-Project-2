@@ -1,4 +1,4 @@
-# app.py
+# app.py - Updated with refactored functions
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -64,7 +64,189 @@ rebalance_cost = st.sidebar.slider("Rebalance Cost (%)",
                                    format="%.2f")
 
 
-# ─── Data Helpers ──────────────────────────────────────────────────────────────
+# ─── Refactored Data Functions ─────────────────────────────────────────────────
+@st.cache_data
+def load_and_prepare_data():
+    """Load rank and price data from CSV files"""
+    # Load rank data (tickers by date)
+    rank_df = pd.read_csv('Rank.csv', index_col=0, parse_dates=True, dayfirst=True)
+    
+    # Load price data
+    price_df = pd.read_csv('Prices.csv', index_col=0, parse_dates=True, dayfirst=True)
+    
+    return rank_df, price_df
+
+
+@st.cache_data
+def calculate_returns_from_prices(price_df):
+    """Calculate daily returns from price data"""
+    returns_df = price_df.pct_change()  # Calculate returns as decimal
+    returns_df = returns_df.fillna(0)  # Fill NaN values with 0
+    return returns_df
+
+
+@st.cache_data
+def generate_portfolio(rank_df, number_of_positions, rebalance_frequency):
+    """Select top N holdings based on rank data"""
+    frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
+    rebalance_period = frequency_mapping[rebalance_frequency]
+    
+    portfolio = pd.DataFrame(index=rank_df.index, columns=range(number_of_positions))
+    current_holdings = []
+    
+    for i, (date, row) in enumerate(rank_df.iterrows()):
+        if i % rebalance_period == 0:
+            # Get the ticker names for top N positions from the rank columns
+            current_holdings = row.iloc[:number_of_positions].tolist()
+        portfolio.loc[date] = current_holdings
+    
+    return portfolio
+
+
+def get_portfolio_returns(portfolio, returns_df):
+    """Get returns for each position in the portfolio"""
+    portfolio_returns = pd.DataFrame(index=portfolio.index, 
+                                   columns=portfolio.columns, 
+                                   dtype=float)
+    
+    for date in portfolio.index:
+        if date in returns_df.index:
+            holdings = portfolio.loc[date]
+            daily_returns = []
+            
+            for ticker in holdings:
+                if pd.notna(ticker) and ticker in returns_df.columns:
+                    daily_returns.append(returns_df.at[date, ticker])
+                else:
+                    daily_returns.append(0.0)
+                    
+            portfolio_returns.loc[date] = daily_returns
+    
+    return portfolio_returns
+
+
+def calculate_position_weights(num_positions, cash_percentage):
+    """Calculate position weights with linear decrease"""
+    investable = 100.0 - cash_percentage
+    
+    if num_positions <= 5:
+        top_weight = 0.3 * investable
+    else:
+        top_weight = 0.3 * investable - (num_positions - 5) * 0.03 * investable
+    
+    if num_positions > 1:
+        # Calculate linear decrease
+        total_decrease = 2 * (top_weight * num_positions - investable)
+        decrease_per_position = total_decrease / (num_positions * (num_positions - 1))
+        
+        weights = [top_weight - i * decrease_per_position for i in range(num_positions)]
+    else:
+        weights = [investable]
+    
+    # Convert to decimal form
+    return [w / 100.0 for w in weights]
+
+
+def get_rankings(date, rank_df):
+    """Get ticker rankings for a specific date"""
+    rankings = {}
+    
+    if date in rank_df.index:
+        row = rank_df.loc[date]
+        for rank, ticker in enumerate(row.values, 1):
+            if pd.notna(ticker) and str(ticker).strip():
+                rankings[str(ticker).strip()] = rank
+    
+    return rankings
+
+
+def calculate_rebalance_cost(prev_holdings, current_holdings, weights, 
+                            prev_date, current_date, rank_df):
+    """
+    Calculate rebalancing cost based on position changes
+    
+    Returns total weight subject to rebalancing cost
+    """
+    total_cost = 0.0
+    
+    # Get rankings for both periods
+    prev_ranks = get_rankings(prev_date, rank_df)
+    curr_ranks = get_rankings(current_date, rank_df)
+    
+    # Track which positions from previous holdings are still present
+    prev_set = set(prev_holdings)
+    curr_set = set(current_holdings)
+    
+    # Check each current position
+    for i, ticker in enumerate(current_holdings):
+        current_weight = weights[i]
+        
+        if ticker in prev_set:
+            # Stock was in previous portfolio
+            prev_position = prev_holdings.index(ticker)
+            prev_weight = weights[prev_position]
+            
+            # Check if ranking changed
+            prev_rank = prev_ranks.get(ticker, float('inf'))
+            curr_rank = curr_ranks.get(ticker, float('inf'))
+            
+            if prev_rank != curr_rank:
+                # Ranking changed - charge for weight difference
+                weight_change = abs(current_weight - prev_weight)
+                total_cost += weight_change
+        else:
+            # New stock in portfolio - charge for entire weight
+            total_cost += current_weight
+    
+    # Account for stocks removed from portfolio
+    for i, ticker in enumerate(prev_holdings):
+        if ticker not in curr_set:
+            # Stock was removed - charge for entire previous weight
+            total_cost += weights[i]
+    
+    return total_cost
+
+
+def calculate_weighted_returns_with_rebalancing(portfolio, portfolio_returns, weights, 
+                                               rebalance_frequency, rebalance_cost, rank_df):
+    """Calculate weighted returns including rebalancing costs"""
+    frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
+    rebalance_period = frequency_mapping[rebalance_frequency]
+    
+    weighted_returns = pd.DataFrame(index=portfolio.index, 
+                                  columns=portfolio.columns, 
+                                  dtype=float)
+    
+    prev_holdings = None
+    prev_date = None
+    
+    for idx, date in enumerate(portfolio.index):
+        # Calculate base weighted returns
+        daily_returns = portfolio_returns.loc[date].values
+        weighted_returns.loc[date] = weights * daily_returns
+        
+        # Apply rebalancing cost if it's a rebalancing period
+        if idx % rebalance_period == 0 and idx > 0 and prev_holdings is not None:
+            current_holdings = portfolio.loc[date].tolist()
+            
+            # Calculate rebalancing cost
+            rebalance_impact = calculate_rebalance_cost(
+                prev_holdings, current_holdings, weights, 
+                prev_date, date, rank_df
+            )
+            
+            # Apply cost as a reduction to returns
+            cost_factor = rebalance_impact * (rebalance_cost / 100)
+            weighted_returns.loc[date] *= (1 - cost_factor)
+        
+        # Update previous holdings for next rebalancing
+        if idx % rebalance_period == 0:
+            prev_holdings = portfolio.loc[date].tolist()
+            prev_date = date
+    
+    return weighted_returns
+
+
 @st.cache_data
 def get_actual_gross_returns():
     data = {
@@ -84,205 +266,40 @@ def get_actual_gross_returns():
     return seq
 
 
-@st.cache_data
-def calculate_position_percentages(num_positions, cash_percentage):
-    """Same as original - calculates weight for each position"""
-    total_percentage = 100 - cash_percentage
-    if num_positions <= 5:
-        highest_percentage = 0.30 * total_percentage
-    else:
-        highest_percentage = 0.30 * total_percentage - (num_positions - 5) * 0.02 * total_percentage - (15-num_positions)
-    
-    sum_percentages = total_percentage
-    n = num_positions
-    a = highest_percentage
-    S = sum_percentages
-
-    common_difference = (2 * (a * n) - 2 * S) / (n * (n - 1)) if n > 1 else 0
-    percentages = [a - i * common_difference for i in range(num_positions)]
-    
-    return percentages
-
-
-@st.cache_data
-def generate_portfolio(number_of_positions, rebalance_frequency, file_path):
-    try:
-        df = pd.read_csv(file_path,
-                         index_col=0,
-                         parse_dates=True,
-                         dayfirst=True)
-    except Exception as e:
-        st.error(f"Error reading {file_path}: {str(e)}")
-        return None
-
-    freq_map = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
-    p = freq_map[rebalance_frequency]
-    portfolio = pd.DataFrame(index=df.index,
-                             columns=range(number_of_positions))
-    current = []
-    for t, (_, row) in enumerate(df.iterrows()):
-        if t % p == 0:
-            current = row.iloc[:number_of_positions].tolist()
-        portfolio.iloc[t] = current
-    return portfolio
-
-
-@st.cache_data
-def generate_returns_portfolio(portfolio, price_csv_path):
-    try:
-        prices = pd.read_csv(price_csv_path,
-                             index_col=0,
-                             parse_dates=True,
-                             dayfirst=True)
-    except Exception as e:
-        st.error(f"Error reading {price_csv_path}: {str(e)}")
-        return None
-
-    returns = prices.pct_change(fill_method=None).fillna(0.0)
-    ret_port = pd.DataFrame(index=portfolio.index,
-                            columns=portfolio.columns,
-                            dtype=float)
-    for date in portfolio.index:
-        tickers = portfolio.loc[date]
-        ret_port.loc[date] = [
-            returns.at[date, t] if t in returns.columns else 0.0
-            for t in tickers
-        ]
-    return ret_port
-
-
-def calculate_rebalance_impact(prev, curr, weights, prev_ranks, curr_ranks):
-    """
-    Calculate rebalance cost based on rank changes and weight differences.
-
-    Args:
-        prev: Previous portfolio positions (list of tickers)
-        curr: Current portfolio positions (list of tickers)
-        weights: Current weight allocations
-        prev_ranks: Previous ranks for all stocks (dict: ticker -> rank)
-        curr_ranks: Current ranks for all stocks (dict: ticker -> rank)
-
-    Returns:
-        Total weight change subject to rebalance cost
-    """
-    total_cost = 0.0
-
-    # Create sets for easier comparison
-    prev_set = set(prev)
-    curr_set = set(curr)
-
-    # For each current position, calculate the weight change
-    for i, ticker in enumerate(curr):
-        current_weight = weights[i]
-
-        if ticker in prev_set:
-            # Stock was in previous portfolio
-            prev_position = prev.index(ticker)
-            prev_weight = weights[prev_position] if prev_position < len(
-                weights) else 0
-
-            # Get rank information
-            prev_rank = prev_ranks.get(ticker, None)
-            curr_rank = curr_ranks.get(ticker, None)
-
-            # If ranks are different or missing, there's a position change
-            if prev_rank != curr_rank or prev_rank is None or curr_rank is None:
-                # Calculate weight change - use absolute difference
-                weight_change = abs(current_weight - prev_weight)
-                total_cost += weight_change
-            # If ranks are the same, minimal rebalancing needed
-            elif prev_position != i:
-                # Position changed but rank stayed same - small adjustment
-                weight_change = abs(current_weight - prev_weight)
-                total_cost += weight_change * 0.5  # Reduced cost for same rank
-        else:
-            # New stock in portfolio - full weight is subject to rebalance cost
-            total_cost += current_weight
-
-    # Account for stocks that were removed from portfolio
-    for i, ticker in enumerate(prev):
-        if ticker not in curr_set and i < len(weights):
-            total_cost += weights[i]
-
-    return total_cost
-
-
-def build_weighted_returns_df(num_positions, cash_pct, returns_portfolio,
-                              rebalance_frequency, rebalance_cost, portfolio):
-    w = np.array(calculate_position_percentages(num_positions,
-                                                cash_pct)) / 100.0
-    freq_map = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
-    p = freq_map[rebalance_frequency]
-    df = pd.DataFrame(index=returns_portfolio.index,
-                      columns=returns_portfolio.columns,
-                      dtype=float)
-    prev_holdings = None
-
-    # Load rank data to get historical ranks
-    try:
-        rank_data = pd.read_csv("Rank.csv",
-                                index_col=0,
-                                parse_dates=True,
-                                dayfirst=True)
-    except:
-        rank_data = None
-
-    for idx, date in enumerate(returns_portfolio.index):
-        df.loc[date] = w * returns_portfolio.loc[date].values
-
-        if idx % p == 0 and idx > 0 and prev_holdings is not None and rank_data is not None:
-            curr = portfolio.loc[date].tolist()
-
-            # Get previous date for rank comparison
-            prev_date = returns_portfolio.index[
-                idx - p] if idx >= p else returns_portfolio.index[0]
-
-            # Create rank dictionaries for the two periods
-            prev_ranks = {}
-            curr_ranks = {}
-
-            # Get ranks for previous period
-            if prev_date in rank_data.index:
-                prev_row = rank_data.loc[prev_date]
-                for col_idx, ticker in enumerate(prev_row.values):
-                    if pd.notna(ticker) and ticker.strip():
-                        prev_ranks[ticker.strip()] = col_idx + 1
-
-            # Get ranks for current period
-            if date in rank_data.index:
-                curr_row = rank_data.loc[date]
-                for col_idx, ticker in enumerate(curr_row.values):
-                    if pd.notna(ticker) and ticker.strip():
-                        curr_ranks[ticker.strip()] = col_idx + 1
-
-            # Calculate rebalance cost based on rank changes
-            turn = calculate_rebalance_impact(prev_holdings, curr, w,
-                                              prev_ranks, curr_ranks)
-            cost_factor = turn * (rebalance_cost / 100)
-            df.loc[date] *= (1 - cost_factor)
-
-        if idx % p == 0:
-            prev_holdings = portfolio.loc[date].tolist()
-
-    return df
-
-
 def calculate_portfolio_performance():
-    rank_file, prices_file = check_required_files()
-
-    port = generate_portfolio(num_positions, rebalance_frequency, rank_file)
-    if port is None:
-        return None, None
-
-    ret_port = generate_returns_portfolio(port, prices_file)
-    if ret_port is None:
-        return None, None
-
-    wdf = build_weighted_returns_df(num_positions, cash_percentage, ret_port,
-                                    rebalance_frequency, rebalance_cost, port)
-    daily = wdf.sum(axis=1)
-    value = 100 * (1 + daily).cumprod()
-    return value, port
+    """Main function to calculate portfolio performance"""
+    
+    # Check files exist
+    check_required_files()
+    
+    # Load data
+    rank_df, price_df = load_and_prepare_data()
+    
+    # Calculate returns from prices
+    returns_df = calculate_returns_from_prices(price_df)
+    
+    # Generate portfolio based on rankings
+    portfolio = generate_portfolio(rank_df, num_positions, rebalance_frequency)
+    
+    # Get returns for portfolio positions
+    portfolio_returns = get_portfolio_returns(portfolio, returns_df)
+    
+    # Calculate position weights
+    weights = calculate_position_weights(num_positions, cash_percentage)
+    
+    # Calculate weighted returns with rebalancing costs
+    weighted_returns = calculate_weighted_returns_with_rebalancing(
+        portfolio, portfolio_returns, weights, 
+        rebalance_frequency, rebalance_cost, rank_df
+    )
+    
+    # Calculate daily portfolio returns (sum across all positions)
+    daily_returns = weighted_returns.sum(axis=1)
+    
+    # Calculate cumulative portfolio value starting at 100
+    portfolio_value = 100 * (1 + daily_returns).cumprod()
+    
+    return portfolio_value, portfolio
 
 
 def create_comparison_chart(portfolio_value):
@@ -318,23 +335,34 @@ def create_comparison_chart(portfolio_value):
 def calculate_portfolio_for_period(num_pos, cash_pct, rebal_freq, rebal_cost,
                                    start_m, end_m):
     try:
-        # Get full portfolio performance
-        rank_file, prices_file = check_required_files()
+        # Load data
+        rank_df, price_df = load_and_prepare_data()
+        
+        # Calculate returns from prices
+        returns_df = calculate_returns_from_prices(price_df)
+        
+        # Generate portfolio based on rankings
+        portfolio = generate_portfolio(rank_df, num_pos, rebal_freq)
+        
+        # Get returns for portfolio positions
+        portfolio_returns = get_portfolio_returns(portfolio, returns_df)
+        
+        # Calculate position weights
+        weights = calculate_position_weights(num_pos, cash_pct)
+        
+        # Calculate weighted returns with rebalancing costs
+        weighted_returns = calculate_weighted_returns_with_rebalancing(
+            portfolio, portfolio_returns, weights, 
+            rebal_freq, rebal_cost, rank_df
+        )
+        
+        # Calculate daily portfolio returns
+        daily_returns = weighted_returns.sum(axis=1)
+        
+        # Calculate cumulative portfolio value
+        value = 100 * (1 + daily_returns).cumprod()
 
-        port = generate_portfolio(num_pos, rebal_freq, rank_file)
-        if port is None:
-            return None
-
-        ret_port = generate_returns_portfolio(port, prices_file)
-        if ret_port is None:
-            return None
-
-        wdf = build_weighted_returns_df(num_pos, cash_pct, ret_port,
-                                        rebal_freq, rebal_cost, port)
-        daily = wdf.sum(axis=1)
-        value = 100 * (1 + daily).cumprod()
-
-        # Extract the period - ensure valid indices
+        # Extract the period
         max_idx = len(value) - 1
         start_idx = min(start_m, max_idx)
         end_idx = min(end_m, max_idx)
@@ -470,7 +498,7 @@ st.title("🚀 Portfolio Strategy Analyzer")
 st.markdown("Analyze and optimize portfolio strategies using historical data")
 st.markdown("---")
 
-# Check files first
+# Calculate portfolio performance
 try:
     portfolio_value, portfolio = calculate_portfolio_performance()
     if portfolio_value is None:
@@ -511,16 +539,13 @@ years = ['2018', '2019', '2020', '2021', '2022']
 # Get actual returns data
 gross_returns = get_actual_gross_returns()
 
-# Calculate strategy monthly returns
-daily_returns = portfolio_value.pct_change(fill_method=None).fillna(0.0)
+# Calculate strategy monthly returns properly
 strategy_monthly_returns = []
 
-# Group by months (assuming monthly data points)
+# Calculate month-over-month returns from portfolio value
 for i in range(len(portfolio_value) - 1):
-    if i < len(daily_returns):
-        monthly_return = (
-            portfolio_value.iloc[i + 1] / portfolio_value.iloc[i] - 1) * 100
-        strategy_monthly_returns.append(monthly_return)
+    monthly_return = (portfolio_value.iloc[i + 1] / portfolio_value.iloc[i] - 1) * 100
+    strategy_monthly_returns.append(monthly_return)
 
 # Create restructured table with years as rows and months as columns
 table_data = {}
@@ -532,11 +557,10 @@ for year in years:
     year_actual_returns = []
 
     for month in months:
-        if month_idx < len(strategy_monthly_returns) and month_idx < len(
-                gross_returns):
-            strategy_ret = strategy_monthly_returns[month_idx]
+        if month_idx < len(gross_returns) and month_idx < len(strategy_monthly_returns):
             actual_ret = gross_returns[month_idx]
-
+            strategy_ret = strategy_monthly_returns[month_idx]
+            
             year_strategy_returns.append(strategy_ret)
             year_actual_returns.append(actual_ret)
 
@@ -544,17 +568,29 @@ for year in years:
             cell_value = f"T: {strategy_ret:.1f}%\nA: {actual_ret:.1f}%"
             year_data[month] = cell_value
             month_idx += 1
+        elif month_idx < len(gross_returns):
+            # Only actual data available
+            actual_ret = gross_returns[month_idx]
+            year_actual_returns.append(actual_ret)
+            
+            cell_value = f"T: N/A\nA: {actual_ret:.1f}%"
+            year_data[month] = cell_value
+            month_idx += 1
         else:
             year_data[month] = ""
 
     # Calculate yearly totals
-    if year_strategy_returns and year_actual_returns:
+    if year_strategy_returns and year_actual_returns and len(year_strategy_returns) == len(year_actual_returns):
         strategy_yearly = (
             (np.prod([1 + r / 100 for r in year_strategy_returns]) - 1) * 100)
         actual_yearly = ((np.prod([1 + r / 100
                                    for r in year_actual_returns]) - 1) * 100)
         year_data[
             'Yearly Total'] = f"T: {strategy_yearly:.1f}%\nA: {actual_yearly:.1f}%"
+    elif year_actual_returns:
+        actual_yearly = ((np.prod([1 + r / 100
+                                   for r in year_actual_returns]) - 1) * 100)
+        year_data['Yearly Total'] = f"T: N/A\nA: {actual_yearly:.1f}%"
     else:
         year_data['Yearly Total'] = ""
 
