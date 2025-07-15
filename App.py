@@ -139,7 +139,7 @@ def calculate_position_weights(num_positions, cash_percentage):
     if num_positions <= 5:
         top_weight = 0.3 * investable
     else:
-        top_weight = 0.3 * investable - (num_positions - 5) * 0.03 * investable
+        top_weight = 0.3 * investable - (num_positions - 5) * 0.02 * investable - (15 - num_positions)
     
     if num_positions > 1:
         # Calculate linear decrease
