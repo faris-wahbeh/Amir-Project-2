@@ -86,14 +86,22 @@ def get_actual_gross_returns():
 
 @st.cache_data
 def calculate_position_percentages(num_positions, cash_percentage):
-    investable = 100.0 - cash_percentage
+    """Same as original - calculates weight for each position"""
+    total_percentage = 100 - cash_percentage
     if num_positions <= 5:
-        top = 0.3 * investable
+        highest_percentage = 0.30 * total_percentage
     else:
-        top = 0.3 * investable - (num_positions - 5) * 0.02 * investable - (15-num_positions)
+        highest_percentage = 0.30 * total_percentage - (num_positions - 5) * 0.02 * total_percentage - (15-num_positions)
+    
+    sum_percentages = total_percentage
     n = num_positions
-    d = (2 * (top * n) - 2 * investable) / (n * (n - 1)) if n > 1 else 0
-    return [top - i * d for i in range(n)]
+    a = highest_percentage
+    S = sum_percentages
+
+    common_difference = (2 * (a * n) - 2 * S) / (n * (n - 1)) if n > 1 else 0
+    percentages = [a - i * common_difference for i in range(num_positions)]
+    
+    return percentages
 
 
 @st.cache_data
