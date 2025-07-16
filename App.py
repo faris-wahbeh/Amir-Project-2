@@ -53,13 +53,13 @@ def check_required_files():
 st.sidebar.header("Portfolio Parameters")
 
 num_positions = st.sidebar.slider("Number of Positions", 5, 15, 15, 1)
-cash_percentage = st.sidebar.slider("Cash Percentage (%)", 0, 50, 5, 1)
+cash_percentage = st.sidebar.slider("Cash Percentage (%)", 0, 50, 0, 1)
 rebalance_frequency = st.sidebar.selectbox(
     "Rebalance Frequency", ["monthly", "quarterly", "semi-yearly"], index=0)
 rebalance_cost = st.sidebar.slider("Rebalance Cost (%)",
                                    0.0,
                                    5.0,
-                                   2.50,
+                                   2.00,
                                    0.01,
                                    format="%.2f")
 
