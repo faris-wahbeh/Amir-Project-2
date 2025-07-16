@@ -602,6 +602,108 @@ def create_optimization_chart(opt):
     return fig
 
 
+# ─── Excel Download Functions ────────────────────────────────────────────────
+def create_contribution_excel(portfolio, portfolio_returns, weights, rebalance_frequency, rebalance_cost, rank_df, contribution_type='gross'):
+    """Create Excel file with returns by rank position"""
+    
+    # Load the returns data properly
+    rank_df, price_df = load_and_prepare_data()
+    returns_df = calculate_returns_from_prices(price_df)
+    
+    # Create DataFrame with dates and rank positions
+    data = {'Date': portfolio.index}
+    
+    # Store raw returns for monthly total calculation
+    raw_returns_by_date = {}
+    
+    # Add columns for each rank position
+    for i in range(len(weights)):
+        rank_col = f'Rank {i+1}'
+        data[rank_col] = []
+        
+        for date in portfolio.index:
+            # Get the stock in this rank position for this date
+            stock_ticker = portfolio.loc[date, i]
+            
+            # Get the return for this stock on this date from the returns_df
+            if stock_ticker in returns_df.columns and date in returns_df.index:
+                return_value = returns_df.at[date, stock_ticker]
+                
+                # Convert string percentage to float if needed
+                if isinstance(return_value, str) and return_value.endswith('%'):
+                    return_value = float(return_value.replace('%', ''))
+                elif return_value is None or pd.isna(return_value):
+                    return_value = 0.0
+                elif isinstance(return_value, (int, float)):
+                    # Already a number, use as is
+                    pass
+                else:
+                    return_value = 0.0
+                    
+                # Store raw return for monthly total calculation
+                if date not in raw_returns_by_date:
+                    raw_returns_by_date[date] = []
+                raw_returns_by_date[date].append(return_value)
+                    
+                # Format the display value as "Stock: Return%"
+                display_value = f"{stock_ticker}: {return_value:.2f}%"
+            else:
+                # Store 0 for monthly total calculation
+                if date not in raw_returns_by_date:
+                    raw_returns_by_date[date] = []
+                raw_returns_by_date[date].append(0.0)
+                
+                display_value = f"{stock_ticker}: 0.00%"
+            
+            data[rank_col].append(display_value)
+    
+    # Add Monthly Total column (weighted returns)
+    data['Monthly Total'] = []
+    for date in portfolio.index:
+        if date in raw_returns_by_date:
+            # Calculate weighted returns: weight * return for each position, then sum
+            weighted_sum = 0.0
+            for i in range(len(weights)):
+                position_weight = weights[i] * 100  # Convert to percentage
+                position_return = raw_returns_by_date[date][i] if i < len(raw_returns_by_date[date]) else 0.0
+                weighted_sum += (position_weight * position_return / 100)  # Weight * Return
+            data['Monthly Total'].append(f"{weighted_sum:.2f}%")
+        else:
+            data['Monthly Total'].append("0.00%")
+    
+    # Create DataFrame
+    df = pd.DataFrame(data)
+    
+    return df
+
+def generate_excel_download(df, filename):
+    """Generate Excel file for download"""
+    import io
+    
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='Returns by Rank', index=False)
+        
+        # Get the workbook and worksheet
+        workbook = writer.book
+        worksheet = writer.sheets['Returns by Rank']
+        
+        # Auto-adjust column widths
+        for column in worksheet.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            worksheet.column_dimensions[column_letter].width = adjusted_width
+    
+    output.seek(0)
+    return output.getvalue()
+
 # ─── Main App ─────────────────────────────────────────────────────────────────
 st.title("Portfolio Strategy Analyzer")
 st.markdown("Analyze and optimize portfolio strategies using historical data")
@@ -655,7 +757,42 @@ c4.metric("Annualized", f"{((sf/100)**(1/yrs)-1)*100:.1f}%")
 c5.metric("Strategy Volatility", f"{strategy_volatility:.1f}%")
 c6.metric("Actual Volatility", f"{actual_volatility:.1f}%")
 
-st.caption("Note: Volatility is calculated as the annualized standard deviation of monthly returns (std × √12)")
+st.caption("💡 Volatility is calculated as the annualized standard deviation of monthly returns (std × √12)")
+
+# Download Section
+st.markdown("---")
+st.subheader("📊 Download Portfolio Returns by Rank")
+st.markdown("Download Excel file showing returns for each ranked stock position by date")
+
+if st.button("📥 Download Returns by Rank", type="secondary"):
+    try:
+        # Load data for Excel generation
+        rank_df, price_df = load_and_prepare_data()
+        returns_df = calculate_returns_from_prices(price_df)
+        portfolio_excel = generate_portfolio(rank_df, num_positions, rebalance_frequency)
+        portfolio_returns_excel = get_portfolio_returns(portfolio_excel, returns_df)
+        weights_excel = calculate_position_weights(num_positions, cash_percentage)
+        
+        # Create returns Excel
+        returns_df_excel = create_contribution_excel(
+            portfolio_excel, portfolio_returns_excel, weights_excel, 
+            rebalance_frequency, rebalance_cost, rank_df, 'gross'
+        )
+        
+        excel_data = generate_excel_download(returns_df_excel, 'returns_by_rank.xlsx')
+        
+        st.download_button(
+            label="💾 Download Returns by Rank Excel",
+            data=excel_data,
+            file_name=f"returns_by_rank_{num_positions}pos_{cash_percentage}cash_{rebalance_frequency}_{rebalance_cost}cost.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        st.success("✅ Returns by rank Excel ready for download!")
+        
+    except Exception as e:
+        st.error(f"Error generating returns by rank Excel: {str(e)}")
+
+st.markdown("**File Format:** Each row shows the date and returns for each ranked stock position (Stock: Return%).")
 
 # Monthly Comparison Table
 st.markdown("---")
@@ -769,7 +906,7 @@ if table_data:
         style_cells, subset=[col for col in df_table.columns if col != 'Year'])
 
     # Display the table with legend
-    st.markdown("**Legend:** T = Theoretical Strategy,  A = Actual Returns")
+    st.markdown("**Legend:** T = Theoretical Strategy, A = Actual Returns")
     st.markdown(
         "🟢 Green = Strategy Outperformed | 🔴 Red = Strategy Underperformed | 🟡 Yellow = Equal Performance"
     )
