@@ -759,40 +759,6 @@ c6.metric("Actual Volatility", f"{actual_volatility:.1f}%")
 
 st.caption("💡 Volatility is calculated as the annualized standard deviation of monthly returns (std × √12)")
 
-# Download Section
-st.markdown("---")
-st.subheader("📊 Download Portfolio Returns by Rank")
-st.markdown("Download Excel file showing returns for each ranked stock position by date")
-
-if st.button("📥 Download Returns by Rank", type="secondary"):
-    try:
-        # Load data for Excel generation
-        rank_df, price_df = load_and_prepare_data()
-        returns_df = calculate_returns_from_prices(price_df)
-        portfolio_excel = generate_portfolio(rank_df, num_positions, rebalance_frequency)
-        portfolio_returns_excel = get_portfolio_returns(portfolio_excel, returns_df)
-        weights_excel = calculate_position_weights(num_positions, cash_percentage)
-        
-        # Create returns Excel
-        returns_df_excel = create_contribution_excel(
-            portfolio_excel, portfolio_returns_excel, weights_excel, 
-            rebalance_frequency, rebalance_cost, rank_df, 'gross'
-        )
-        
-        excel_data = generate_excel_download(returns_df_excel, 'returns_by_rank.xlsx')
-        
-        st.download_button(
-            label="💾 Download Returns by Rank Excel",
-            data=excel_data,
-            file_name=f"returns_by_rank_{num_positions}pos_{cash_percentage}cash_{rebalance_frequency}_{rebalance_cost}cost.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        st.success("✅ Returns by rank Excel ready for download!")
-        
-    except Exception as e:
-        st.error(f"Error generating returns by rank Excel: {str(e)}")
-
-st.markdown("**File Format:** Each row shows the date and returns for each ranked stock position (Stock: Return%).")
 
 # Monthly Comparison Table
 st.markdown("---")
