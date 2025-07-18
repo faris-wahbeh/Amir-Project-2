@@ -926,6 +926,25 @@ if run_opt:
             except Exception as e:
                 st.error(f"Error during optimization: {str(e)}")
 
+# Position Weightings Display
+st.markdown("---")
+st.subheader("Position Weightings")
+
+# Calculate current weights based on sidebar parameters
+current_weights = calculate_position_weights(num_positions, cash_percentage)
+
+st.write("**Position Weightings:**")
+for i, weight in enumerate(current_weights):
+    st.write(f"Rank {i+1}: {weight*100:.2f}%")
+
+# Show cash percentage if applicable
+if cash_percentage > 0:
+    st.write(f"Cash: {cash_percentage:.2f}%")
+
+# Show total allocation
+total_invested = sum(current_weights) * 100
+st.write(f"**Total Invested: {total_invested:.2f}%**")
+
 # Footer
 st.markdown("---")
 st.markdown("*Portfolio Strategy Analyzer - Built with Streamlit on Replit*")
