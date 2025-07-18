@@ -471,22 +471,22 @@ def calculate_volatility(values):
     """Calculate annualized volatility from portfolio values"""
     if len(values) < 2:
         return 0.0
-    
+
     # Calculate monthly returns
     returns = []
     for i in range(1, len(values)):
         monthly_return = (values[i] / values[i-1] - 1)
         returns.append(monthly_return)
-    
+
     if len(returns) == 0:
         return 0.0
-    
+
     # Calculate standard deviation of returns
     returns_std = np.std(returns, ddof=1)
-    
+
     # Annualize volatility (multiply by sqrt(12) for monthly data)
     annualized_volatility = returns_std * np.sqrt(12) * 100
-    
+
     return annualized_volatility
 
 
@@ -605,30 +605,30 @@ def create_optimization_chart(opt):
 # ─── Excel Download Functions ────────────────────────────────────────────────
 def create_contribution_excel(portfolio, portfolio_returns, weights, rebalance_frequency, rebalance_cost, rank_df, contribution_type='gross'):
     """Create Excel file with returns by rank position"""
-    
+
     # Load the returns data properly
     rank_df, price_df = load_and_prepare_data()
     returns_df = calculate_returns_from_prices(price_df)
-    
+
     # Create DataFrame with dates and rank positions
     data = {'Date': portfolio.index}
-    
+
     # Store raw returns for monthly total calculation
     raw_returns_by_date = {}
-    
+
     # Add columns for each rank position
     for i in range(len(weights)):
         rank_col = f'Rank {i+1}'
         data[rank_col] = []
-        
+
         for date in portfolio.index:
             # Get the stock in this rank position for this date
             stock_ticker = portfolio.loc[date, i]
-            
+
             # Get the return for this stock on this date from the returns_df
             if stock_ticker in returns_df.columns and date in returns_df.index:
                 return_value = returns_df.at[date, stock_ticker]
-                
+
                 # Convert string percentage to float if needed
                 if isinstance(return_value, str) and return_value.endswith('%'):
                     return_value = float(return_value.replace('%', ''))
@@ -639,12 +639,12 @@ def create_contribution_excel(portfolio, portfolio_returns, weights, rebalance_f
                     pass
                 else:
                     return_value = 0.0
-                    
+
                 # Store raw return for monthly total calculation
                 if date not in raw_returns_by_date:
                     raw_returns_by_date[date] = []
                 raw_returns_by_date[date].append(return_value)
-                    
+
                 # Format the display value as "Stock: Return%"
                 display_value = f"{stock_ticker}: {return_value:.2f}%"
             else:
@@ -652,11 +652,11 @@ def create_contribution_excel(portfolio, portfolio_returns, weights, rebalance_f
                 if date not in raw_returns_by_date:
                     raw_returns_by_date[date] = []
                 raw_returns_by_date[date].append(0.0)
-                
+
                 display_value = f"{stock_ticker}: 0.00%"
-            
+
             data[rank_col].append(display_value)
-    
+
     # Add Monthly Total column (weighted returns)
     data['Monthly Total'] = []
     for date in portfolio.index:
@@ -670,24 +670,24 @@ def create_contribution_excel(portfolio, portfolio_returns, weights, rebalance_f
             data['Monthly Total'].append(f"{weighted_sum:.2f}%")
         else:
             data['Monthly Total'].append("0.00%")
-    
+
     # Create DataFrame
     df = pd.DataFrame(data)
-    
+
     return df
 
 def generate_excel_download(df, filename):
     """Generate Excel file for download"""
     import io
-    
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, sheet_name='Returns by Rank', index=False)
-        
+
         # Get the workbook and worksheet
         workbook = writer.book
         worksheet = writer.sheets['Returns by Rank']
-        
+
         # Auto-adjust column widths
         for column in worksheet.columns:
             max_length = 0
@@ -700,7 +700,7 @@ def generate_excel_download(df, filename):
                     pass
             adjusted_width = min(max_length + 2, 50)
             worksheet.column_dimensions[column_letter].width = adjusted_width
-    
+
     output.seek(0)
     return output.getvalue()
 
@@ -822,20 +822,25 @@ for year in years:
         else:
             year_data[month] = ""
 
+    # Hardcoded actual yearly returns
+    hardcoded_actual_yearly = {
+        '2018': 14.5,
+        '2019': 36.5,
+        '2020': 37.7,
+        '2021': 10.6,
+        '2022': -34.3
+    }
+    
     # Calculate yearly totals
-    if year_strategy_returns and year_actual_returns and len(year_strategy_returns) == len(year_actual_returns):
+    if year_strategy_returns:
         strategy_yearly = (
             (np.prod([1 + r / 100 for r in year_strategy_returns]) - 1) * 100)
-        actual_yearly = ((np.prod([1 + r / 100
-                                   for r in year_actual_returns]) - 1) * 100)
+        actual_yearly = hardcoded_actual_yearly.get(year, 0.0)
         year_data[
             'Yearly Total'] = f"T: {strategy_yearly:.1f}%\nA: {actual_yearly:.1f}%"
-    elif year_actual_returns:
-        actual_yearly = ((np.prod([1 + r / 100
-                                   for r in year_actual_returns]) - 1) * 100)
-        year_data['Yearly Total'] = f"T: N/A\nA: {actual_yearly:.1f}%"
     else:
-        year_data['Yearly Total'] = ""
+        actual_yearly = hardcoded_actual_yearly.get(year, 0.0)
+        year_data['Yearly Total'] = f"T: N/A\nA: {actual_yearly:.1f}%"
 
     table_data[year] = year_data
 
