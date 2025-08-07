@@ -90,7 +90,7 @@ def calculate_position_weights(num_positions, cash_percentage):
     if num_positions <= 5:
         highest_percentage = 0.3 * total_percentage
     else:
-        highest_percentage = 0.3 * total_percentage - (num_positions - 5) * 0.03 * total_percentage
+        highest_percentage = 0.3 * total_percentage - (num_positions - 5) * 0.02 * total_percentage - (15 - num_positions)
     
     if num_positions > 1:
         # Calculate common difference for arithmetic series
