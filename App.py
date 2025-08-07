@@ -1,4 +1,4 @@
-# app.py - Portfolio Strategy Analyzer (corrected & consistent units)
+# app.py - Portfolio Strategy Analyzer (robust + consistent)
 
 import streamlit as st
 import pandas as pd
@@ -18,17 +18,17 @@ warnings.filterwarnings('ignore')
 @dataclass
 class PortfolioConfig:
     """Configuration for portfolio parameters"""
-    num_positions: int
-    cash_percentage: float     # e.g., 8 = 8%
-    rebalance_frequency: str   # 'monthly' | 'quarterly' | 'semi-yearly'
-    rebalance_cost: float      # trading cost as %, e.g., 0.5 = 0.5%
+    num_positions: int                # e.g., 10
+    cash_percentage: float            # e.g., 8 = 8%
+    rebalance_frequency: str          # 'monthly' | 'quarterly' | 'semi-yearly'
+    rebalance_cost: float             # trading cost as %, e.g., 0.5 = 0.5%
 
 @dataclass
 class MarketData:
     """Container for market data"""
-    rank_df: pd.DataFrame      # rows = dates, cols = tickers, values = rank (lower is better)
-    price_df: pd.DataFrame     # rows = dates, cols = tickers, values = price
-    returns_df: pd.DataFrame   # rows = dates, cols = tickers, values = decimal returns
+    rank_df: pd.DataFrame             # rows = dates, cols = tickers, values = rank (lower is better)
+    price_df: pd.DataFrame            # rows = dates, cols = tickers, values = price
+    returns_df: pd.DataFrame          # rows = dates, cols = tickers, values = decimal returns
 
 # Global configuration
 INITIAL_INVESTMENT = 100.0
@@ -39,15 +39,9 @@ ACTUAL_RETURNS_DATA = {
     '2021': [-2.5, 8.2, -6.8, 4.9, -6.3, 6.3, 3.6, 5.2, -2.2, 3.1, -1.8, -0.1],
     '2022': [-12.9, -0.5, -2.1, -8.9, -9.5, -8.2, 9.1, -3.1, -8.1, 3.6, 4.0, -2.4]
 }
-
 ACTUAL_YEARLY_RETURNS = {
-    '2018': 14.5,
-    '2019': 36.5,
-    '2020': 37.7,
-    '2021': 10.6,
-    '2022': -34.3
+    '2018': 14.5, '2019': 36.5, '2020': 37.7, '2021': 10.6, '2022': -34.3
 }
-
 FREQUENCY_MAP = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
 
 # ============================================================================
@@ -58,67 +52,106 @@ def validate_data_files() -> bool:
     """Check if required data files exist"""
     rank_file = Path("Rank.csv")
     prices_file = Path("Prices.csv")
-
     if not rank_file.exists() or not prices_file.exists():
         missing = []
         if not rank_file.exists():
             missing.append("Rank.csv")
         if not prices_file.exists():
             missing.append("Prices.csv")
-
         st.error(f"Missing required files: {', '.join(missing)}")
         st.info("Please upload the required files to your workspace")
         return False
     return True
 
+def _normalize_columns(cols: pd.Index, variant: str) -> pd.Index:
+    """
+    Normalize ticker symbols to maximize overlap.
+    variant in {'base','dash2dot','dot2dash'}
+    """
+    idx = pd.Index(cols).astype(str).str.strip().str.replace(' ', '', regex=False).str.upper()
+    if variant == 'dash2dot':
+        idx = idx.str.replace('-', '.', regex=False)
+    elif variant == 'dot2dash':
+        idx = idx.str.replace('.', '-', regex=False)
+    return idx
+
+def _dedupe_columns(df: pd.DataFrame, name: str) -> pd.DataFrame:
+    """Drop duplicate columns (keep first) and warn."""
+    if df.columns.has_duplicates:
+        before = len(df.columns)
+        df = df.loc[:, ~df.columns.duplicated()]
+        after = len(df.columns)
+        st.warning(f"{name}: dropped {before - after} duplicate columns after normalization.")
+    return df
+
 @st.cache_data
 def load_market_data() -> MarketData:
-    """Load and prepare all market data"""
+    """Load and prepare all market data (align dates & tickers robustly)."""
     rank_df = pd.read_csv('Rank.csv', index_col=0, parse_dates=True, dayfirst=True)
     price_df = pd.read_csv('Prices.csv', index_col=0, parse_dates=True, dayfirst=True)
 
-    # Normalize column names a bit (helps common dot/dash variants)
-    def _norm(cols):
-        return (pd.Index(cols)
-                  .astype(str)
-                  .str.strip()
-                  .str.replace(' ', '', regex=False))
-    rank_df.columns = _norm(rank_df.columns)
-    price_df.columns = _norm(price_df.columns)
-
-    # Align by dates
+    # Align by dates first
     common_index = rank_df.index.intersection(price_df.index)
     rank_df = rank_df.loc[common_index].sort_index()
     price_df = price_df.loc[common_index].sort_index()
 
-    # Align by tickers (IMPORTANT)
+    # Try multiple normalization variants to maximize ticker overlap
+    variants = ['base', 'dash2dot', 'dot2dash']
+    best_variant = 'base'
+    best_overlap = -1
+    best_rank_cols = None
+    best_price_cols = None
+
+    for v in variants:
+        rcols = _normalize_columns(rank_df.columns, v)
+        pcols = _normalize_columns(price_df.columns, v)
+        overlap = len(set(rcols).intersection(set(pcols)))
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_variant = v
+            best_rank_cols = rcols
+            best_price_cols = pcols
+
+    rank_df.columns = best_rank_cols
+    price_df.columns = best_price_cols
+    rank_df = _dedupe_columns(rank_df, "Rank.csv")
+    price_df = _dedupe_columns(price_df, "Prices.csv")
+
     common_cols = rank_df.columns.intersection(price_df.columns)
+
     missing_in_prices = set(rank_df.columns) - set(common_cols)
-    missing_in_rank   = set(price_df.columns) - set(common_cols)
+    missing_in_rank = set(price_df.columns) - set(common_cols)
     if missing_in_prices:
-        st.warning(f"{len(missing_in_prices)} tickers present in Rank.csv but missing in Prices.csv "
-                   f"(showing up to 10): {sorted(list(missing_in_prices))[:10]}")
+        st.warning(f"{len(missing_in_prices)} tickers in Rank.csv missing in Prices.csv "
+                   f"(up to 10 shown): {sorted(list(missing_in_prices))[:10]}")
     if missing_in_rank:
-        st.info(f"{len(missing_in_rank)} tickers present in Prices.csv but not in Rank.csv "
-                f"(showing up to 10): {sorted(list(missing_in_rank))[:10]}")
+        st.info(f"{len(missing_in_rank)} tickers in Prices.csv not in Rank.csv "
+                f"(up to 10 shown): {sorted(list(missing_in_rank))[:10]}")
+
+    if len(common_cols) == 0:
+        st.error(
+            "No overlapping tickers between Rank.csv and Prices.csv after normalization.\n"
+            "Unify tickers (e.g., BRK.B vs BRK-B), remove spaces, and ensure consistent casing."
+        )
+        st.stop()
 
     rank_df = rank_df[common_cols]
     price_df = price_df[common_cols]
 
+    # Calculate returns (decimal). Fill initial NaNs with 0.0.
     returns_df = price_df.pct_change(fill_method=None).fillna(0.0)
 
     return MarketData(rank_df, price_df, returns_df)
 
-
 def get_actual_portfolio_returns() -> List[float]:
     """Get flattened list of actual portfolio returns (% per month)"""
-    returns = []
+    returns: List[float] = []
     for year in sorted(ACTUAL_RETURNS_DATA.keys()):
         returns.extend(ACTUAL_RETURNS_DATA[year])
     return returns
 
 # ============================================================================
-# CORE FUNCTIONS (fixed & consistent)
+# CORE FUNCTIONS (robust + consistent)
 # ============================================================================
 
 def calculate_position_percentages(num_positions: int, cash_percentage: float) -> List[float]:
@@ -132,24 +165,23 @@ def calculate_position_percentages(num_positions: int, cash_percentage: float) -
     if n <= 0 or total_pp == 0:
         return [0.0] * max(0, n)
 
-    # Highest weight baseline: 30% of investable for <=5; linearly diminish after that (by 2% of investable per extra name)
+    # Highest weight baseline: 30% of investable for <=5; diminish 2% of investable per extra name
     if n <= 5:
         a = 0.30 * total_pp
     else:
         a = 0.30 * total_pp - (n - 5) * 0.02 * total_pp
 
-    # Common difference so that sum of arithmetic series equals total_pp
+    # Compute arithmetic series with sum == total_pp
     if n == 1:
         weights = [total_pp]
     else:
         d = (2 * a - 2 * (total_pp / n)) / (n - 1)
         weights = [a - i * d for i in range(n)]
 
-    # If any negatives due to shape, floor at zero and renormalize to total_pp
+    # Floor negatives, renormalize
     weights = [max(0.0, w) for w in weights]
     s = sum(weights)
     if s == 0:
-        # fallback: equal weights
         weights = [total_pp / n] * n
     else:
         weights = [w * total_pp / s for w in weights]
@@ -160,38 +192,62 @@ def generate_portfolio(number_of_positions: int, rebalance_frequency: str, rank_
     """
     Generate portfolio holdings based on rank data.
     Uses row-wise sort (ascending rank) to pick top-N tickers at each rebalance.
+    Always writes exactly N entries (pads with None) to avoid broadcasting errors.
     """
     period = FREQUENCY_MAP[rebalance_frequency]
     portfolio = pd.DataFrame(index=rank_data.index, columns=range(number_of_positions), dtype=object)
 
-    current_holdings: List[str] = []
+    def _pad(lst, n, fill=None):
+        if len(lst) >= n:
+            return lst[:n]
+        return lst + [fill] * (n - len(lst))
+
+    current_holdings = [None] * number_of_positions  # default safe
+    have_cols = rank_data.shape[1] > 0
+
     for i, (dt, row) in enumerate(rank_data.iterrows()):
         if i % period == 0:
-            # lower rank is better
-            sorted_tickers = row.sort_values(ascending=True).index.tolist()
-            current_holdings = sorted_tickers[:number_of_positions]
+            if have_cols:
+                sorted_tickers = row.sort_values(ascending=True).index.tolist()
+            else:
+                sorted_tickers = []
+            current_holdings = _pad(sorted_tickers, number_of_positions, None)
         portfolio.loc[dt] = current_holdings
+
     return portfolio
 
 def generate_returns_portfolio(portfolio: pd.DataFrame, returns_data: pd.DataFrame) -> pd.DataFrame:
     """
     Map returns (decimal) to portfolio holdings (tickers) per date.
-    Missing returns are treated as 0.0 (conservative).
+    None or missing tickers → 0.0 (explicit).
+    Shows a coverage warning if many holdings are missing in returns.
     """
     common_index = portfolio.index.intersection(returns_data.index)
     portfolio = portfolio.loc[common_index]
     returns_data = returns_data.loc[common_index]
 
     ret_port = pd.DataFrame(index=common_index, columns=portfolio.columns, dtype=float)
+
+    missing_map = 0
+    total_map = 0
+
     for dt in common_index:
         row = portfolio.loc[dt]
         vals: List[float] = []
         for pos in row:
-            if pos in returns_data.columns:
-                vals.append(float(returns_data.at[dt, pos]))
+            total_map += 1
+            if (pos is None) or (pos not in returns_data.columns):
+                vals.append(0.0)
+                missing_map += 1
             else:
-                vals.append(0.0)  # explicit: missing treated as flat
+                vals.append(float(returns_data.at[dt, pos]))
         ret_port.loc[dt] = vals
+
+    if total_map > 0:
+        cov = 100 * (1 - missing_map / total_map)
+        if cov < 95:
+            st.warning(f"Returns mapping coverage: {cov:.1f}%. "
+                       f"Consider normalizing tickers further if this is unexpectedly low.")
     return ret_port
 
 def simulate_portfolio(num_positions: int,
@@ -203,8 +259,9 @@ def simulate_portfolio(num_positions: int,
     Core simulation with consistent units:
       - Internal weights are FRACTIONS of total portfolio (sum to 1, include cash).
       - Returns are decimal.
-      - Costs are % of traded notional; turnover = 0.5 * L1 distance between weight vectors.
-      - Cost is subtracted from the period return.
+      - Turnover = 0.5 * L1 distance between weight vectors (fractions).
+      - Period cost% = rebalance_cost% * turnover.
+      - Net return% = gross% - cost%.
     Returns:
       portfolio_value (Series), exposure_delta_pp (Series),
       gross_return_pct (Series), net_return_pct (Series),
@@ -214,13 +271,12 @@ def simulate_portfolio(num_positions: int,
     index = returns_portfolio.index
     n = num_positions
 
-    # Target non-cash weights in percent points and in fractions
+    # Target non-cash weights (pp → frac)
     target_pp = calculate_position_percentages(n, cash_percentage)
-    investable_frac = (100.0 - cash_percentage) / 100.0
     target_frac = np.array([w / 100.0 for w in target_pp], dtype=float)
     cash_target_frac = cash_percentage / 100.0
 
-    # State: start 100% in cash
+    # State: start all cash
     w_current = np.zeros(n + 1, dtype=float)  # [positions..., cash]
     w_current[-1] = 1.0
 
@@ -235,42 +291,33 @@ def simulate_portfolio(num_positions: int,
     for i, dt in enumerate(index):
         rebalancing = (i % period == 0)
 
-        # --- Start-of-period rebalancing & cost ---
+        # --- Rebalance at start of period ---
         cost_pct_this_period = 0.0
         if rebalancing:
-            w_target = np.concatenate([target_frac, [cash_target_frac]])  # fractions
-            # L1 distance (fractions)
-            l1 = float(np.sum(np.abs(w_current - w_target)))
-            # Exposure delta in percent points for UI/debug (matches 2*turnover*100)
-            exposure_pp = 100.0 * l1
-            # Turnover fraction is half the L1 distance
+            w_target = np.concatenate([target_frac, [cash_target_frac]])
+            l1 = float(np.sum(np.abs(w_current - w_target)))      # fractions
+            exposure_pp = 100.0 * l1                              # percent points for display
             turnover = 0.5 * l1
-            # Cost as % of portfolio (percentage points)
-            cost_pct_this_period = rebalance_cost * turnover  # rebalance_cost already a %
-            # Apply new weights post-trade (fractions)
+            cost_pct_this_period = rebalance_cost * turnover      # % points of portfolio
             w_current = w_target.copy()
         else:
             exposure_pp = 0.0
 
-        # Record start-of-period non-cash weights (percent points)
-        weights_history_pp.loc[dt] = (w_current[:-1] * 100.0)
+        # Record start-of-period non-cash weights (pp)
+        if n > 0:
+            weights_history_pp.loc[dt] = (w_current[:-1] * 100.0)
 
-        # --- Returns for this period ---
+        # --- Period returns ---
         r_list = np.array(returns_portfolio.iloc[i].astype(float).fillna(0.0).values, dtype=float)  # decimals
-        # Gross portfolio return (decimal) – cash earns 0
-        gross_r = float(np.sum(w_current[:-1] * r_list))
-        gross_r_pct = gross_r * 100.0
+        gross_r = float(np.sum(w_current[:-1] * r_list))   # decimal
+        gross_r_pct = gross_r * 100.0                      # %
+        net_r_pct = gross_r_pct - cost_pct_this_period     # %
 
-        # Net period return in percent points
-        net_r_pct = gross_r_pct - cost_pct_this_period
-
-        # Update portfolio value
+        # Update value
         V *= (1.0 + net_r_pct / 100.0)
 
-        # Drift weights to end-of-period (fractions), cash has 0 return
-        denom = 1.0 + gross_r
-        if denom <= 0:  # guard against pathological returns
-            denom = 1e-9
+        # Drift weights to end-of-period (cash earns 0)
+        denom = max(1e-12, 1.0 + gross_r)
         w_pos_end = (w_current[:-1] * (1.0 + r_list)) / denom
         w_cash_end = (w_current[-1]) / denom
         w_current = np.concatenate([w_pos_end, [w_cash_end]])
@@ -309,13 +356,13 @@ def execute_portfolio_strategy(config: PortfolioConfig) -> Tuple[pd.Series, pd.D
         market_data.rank_df
     )
 
-    # 2) Map returns to those holdings (decimals)
+    # 2) Map returns (decimals)
     returns_portfolio = generate_returns_portfolio(
         portfolio,
         market_data.returns_df
     )
 
-    # 3) Simulate portfolio with turnover costs
+    # 3) Simulate
     pv, exposure_delta, gross_ret, net_ret, weights_hist_pp = simulate_portfolio(
         config.num_positions,
         config.cash_percentage,
@@ -343,30 +390,18 @@ def calculate_return_metrics(values: np.ndarray) -> Dict[str, float]:
     if len(values) < 2:
         return {'volatility': 0.0, 'total_return': 0.0, 'annualized_return': 0.0}
 
-    # Monthly returns from value series
-    rets = np.diff(values) / values[:-1]
-
-    # Volatility (annualized, monthly → *sqrt(12))
+    rets = np.diff(values) / values[:-1]  # decimal
     volatility = float(np.std(rets, ddof=1) * np.sqrt(12) * 100.0)
-
-    # Total return
     total_return = float(((values[-1] / values[0]) - 1.0) * 100.0)
-
-    # Annualized return
     years = len(values) / 12.0
     annualized_return = float((((values[-1] / values[0]) ** (1.0 / years)) - 1.0) * 100.0) if years > 0 else 0.0
 
-    return {
-        'volatility': volatility,
-        'total_return': total_return,
-        'annualized_return': annualized_return
-    }
+    return {'volatility': volatility, 'total_return': total_return, 'annualized_return': annualized_return}
 
 def calculate_tracking_error(strategy: np.ndarray, benchmark: np.ndarray) -> float:
     """Calculate RMSE tracking error between strategy and benchmark (both normalized)."""
     if len(strategy) != len(benchmark) or len(strategy) == 0:
         return float('inf')
-
     rel_errors_sq = []
     for s, b in zip(strategy, benchmark):
         if b != 0:
@@ -392,15 +427,13 @@ def optimize_portfolio_parameters(target_start: int,
     for ret in actual_returns:
         actual_values.append(actual_values[-1] * (1.0 + ret / 100.0))
 
-    # Period guard
+    # Guards
     if target_start >= len(actual_values) or target_end >= len(actual_values) or target_end <= target_start:
         return None
 
-    # Normalize actual subperiod to 100
     actual_period = np.array(actual_values[target_start:target_end + 1], dtype=float)
     actual_period = actual_period * 100.0 / actual_period[0]
 
-    # Search space
     search_space = {
         'positions': range(5, 16),
         'cash': range(0, 31, 5),
@@ -433,13 +466,11 @@ def optimize_portfolio_parameters(target_start: int,
                         portfolio_value, _, _ = execute_portfolio_strategy(config)
 
                         if target_end < len(portfolio_value):
-                            # Align to same span as actual
                             strategy_period = portfolio_value.iloc[target_start:target_end + 1].values.astype(float)
                             strategy_period = strategy_period * 100.0 / strategy_period[0]
 
                             if len(strategy_period) == len(actual_period):
                                 error = calculate_tracking_error(strategy_period, actual_period)
-
                                 if error < best_error:
                                     best_error = error
                                     best_result = {
@@ -452,7 +483,6 @@ def optimize_portfolio_parameters(target_start: int,
                                         'actual_values': actual_period
                                     }
                     except Exception:
-                        # Skip bad combos or data issues
                         pass
 
                     progress.progress(tested / total)
@@ -469,12 +499,10 @@ def create_performance_chart(portfolio_value: pd.Series) -> Tuple[go.Figure, Lis
     """Create main performance comparison chart against the 'Actual' series."""
     actual_returns = get_actual_portfolio_returns()
     actual_values = [INITIAL_INVESTMENT]
-    # Match the number of points to strategy series length
     for ret in actual_returns[:len(portfolio_value)]:
         actual_values.append(actual_values[-1] * (1.0 + ret / 100.0))
 
     fig = go.Figure()
-    # Strategy
     fig.add_trace(go.Scatter(
         x=list(range(len(portfolio_value))),
         y=portfolio_value.values,
@@ -482,7 +510,6 @@ def create_performance_chart(portfolio_value: pd.Series) -> Tuple[go.Figure, Lis
         name="Strategy",
         line=dict(width=2, color='#1f77b4')
     ))
-    # Actual (trim to same number of points as strategy)
     fig.add_trace(go.Scatter(
         x=list(range(len(actual_values[:len(portfolio_value)]))),
         y=actual_values[:len(portfolio_value)],
@@ -502,21 +529,14 @@ def create_performance_chart(portfolio_value: pd.Series) -> Tuple[go.Figure, Lis
 def create_optimization_chart(result: Dict) -> go.Figure:
     """Create optimization result chart"""
     x = list(range(len(result['strategy_values'])))
-
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=x,
-        y=result['strategy_values'],
-        mode='lines',
-        name='Optimal Strategy',
-        line=dict(color='green', width=2)
+        x=x, y=result['strategy_values'], mode='lines',
+        name='Optimal Strategy', line=dict(color='green', width=2)
     ))
     fig.add_trace(go.Scatter(
-        x=x,
-        y=result['actual_values'],
-        mode='lines',
-        name='Actual',
-        line=dict(color='red', width=2, dash='dash')
+        x=x, y=result['actual_values'], mode='lines',
+        name='Actual', line=dict(color='red', width=2, dash='dash')
     ))
     fig.update_layout(
         template='simple_white',
@@ -538,7 +558,6 @@ def initialize_streamlit():
         layout="wide",
         initial_sidebar_state="expanded",
     )
-    # Hide Streamlit branding
     st.markdown(
         """
         <style>
@@ -674,7 +693,8 @@ def display_optimization_section(portfolio_value: pd.Series):
     col1, col2, col3, col4 = st.columns(4)
 
     start = col1.number_input("Start Month", 0, max(0, len(portfolio_value)-1), 14)
-    end = col2.number_input("End Month", 0, max(0, len(portfolio_value)-1), min(30, max(0, len(portfolio_value)-1)))
+    end = col2.number_input("End Month", 0, max(0, len(portfolio_value)-1),
+                            min(30, max(0, len(portfolio_value)-1)))
     reb_filter = col3.selectbox("Rebalance Filter",
                                 ["any", "monthly", "quarterly", "semi-yearly"])
     optimize = col4.button("Find Match", type="primary")
@@ -696,7 +716,6 @@ def display_optimization_section(portfolio_value: pd.Series):
                         st.write(f"- Cash: {result['cash_percentage']}%")
                         st.write(f"- Rebalance: {result['rebalance_frequency']}")
                         st.write(f"- Cost: {result['rebalance_cost']:.2f}%")
-
                     with p2:
                         st.write("**Performance**")
                         st.write(f"- Error (RMSE): {result['error']:.2f}%")
@@ -757,7 +776,6 @@ def main():
 
     config = create_parameter_sidebar()
 
-    # Calculate portfolio
     try:
         portfolio_value, holdings, debug_info = execute_portfolio_strategy(config)
     except Exception as e:
@@ -766,7 +784,6 @@ def main():
         st.error(traceback.format_exc())
         st.stop()
 
-    # Display results
     fig, actual_values = create_performance_chart(portfolio_value)
     st.plotly_chart(fig, use_container_width=True)
 
