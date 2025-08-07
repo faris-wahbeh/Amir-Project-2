@@ -1,5 +1,5 @@
 # app.py - Portfolio Strategy Analyzer with Clean Functional Architecture
-# Following the exact methodology from the LaTeX document
+# Following the exact methodology from the LaTeX document - CORRECTED VERSION
 
 import streamlit as st
 import pandas as pd
@@ -231,7 +231,7 @@ def calculate_arithmetic_weights(config: PortfolioConfig) -> List[float]:
     return weights
 
 # ============================================================================
-# STEP 3: PORTFOLIO GROWTH CALCULATION
+# STEP 3: PORTFOLIO GROWTH CALCULATION - CORRECTED
 # ============================================================================
 
 def calculate_position_growth(portfolio_returns: pd.DataFrame,
@@ -240,7 +240,7 @@ def calculate_position_growth(portfolio_returns: pd.DataFrame,
     """
     Step 3: Calculate portfolio growth over time
     
-    CRITICAL LOGIC:
+    CRITICAL LOGIC (CORRECTED):
     - Positions are tracked as PERCENTAGES (e.g., 30.0 for 30% of portfolio)
     - At t=0 and rebalancing periods: positions are SET to target weights
     - Between rebalancing: positions GROW with their returns
@@ -259,7 +259,6 @@ def calculate_position_growth(portfolio_returns: pd.DataFrame,
     for i, date in enumerate(portfolio_returns.index):
         if i % rebalance_period == 0:
             # REBALANCING PERIOD: Reset to target percentages
-            # These are the target weights (already as percentages)
             current_percentages = weights.copy()
         else:
             # NO REBALANCING: Use previous values (which have grown)
@@ -274,7 +273,7 @@ def calculate_position_growth(portfolio_returns: pd.DataFrame,
                 return_value = 0
             
             # Apply return to current percentage
-            # This happens whether we rebalanced or not
+            # Convert return_value to decimal if it's in percentage form
             new_value = current_percentages[col_index] * (1 + return_value / 100)
             current_growth.append(new_value)
         
@@ -283,7 +282,7 @@ def calculate_position_growth(portfolio_returns: pd.DataFrame,
     return growth
 
 # ============================================================================
-# STEP 4: REBALANCING CALCULATIONS
+# STEP 4: REBALANCING CALCULATIONS - CORRECTED
 # ============================================================================
 
 def calculate_rebalancing_exposure(holdings: pd.DataFrame,
@@ -293,22 +292,20 @@ def calculate_rebalancing_exposure(holdings: pd.DataFrame,
     """
     Step 4a: Calculate exposure delta (amount traded at each rebalancing)
     
-    CRITICAL LOGIC:
+    CORRECTED LOGIC:
+    - Matches the logic from the correct implementation
     - At rebalancing, we compare:
       1. Where positions ARE (after growth from previous period)
       2. Where positions NEED TO BE (target weights)
     - The sum of absolute differences is the exposure delta
-    
-    NOTE: The growth DataFrame already has positions AFTER rebalancing,
-    so we need to look at the PREVIOUS period to see pre-rebalancing values.
     """
     rebalance_period = get_rebalance_periods(config)
     exposure_delta = pd.Series(index=holdings.index, dtype=float)
     
     for i, date in enumerate(holdings.index):
         if i == 0:
-            # First period: special initialization
-            # This represents initial portfolio setup cost
+            # First period: initialization cost
+            # Using the same formula as the correct code
             delta = 10 * config.num_positions
             
         elif i % rebalance_period == 0:
@@ -328,13 +325,15 @@ def calculate_rebalancing_exposure(holdings: pd.DataFrame,
                 stock_after_rebal = current_holdings[j]
                 
                 # Find this stock's value BEFORE rebalancing
-                # (i.e., what it grew to in the previous period)
                 prev_value = None
                 if stock_after_rebal in previous_holdings:
                     # Stock was in portfolio - find its position
-                    prev_position_index = previous_holdings.index(stock_after_rebal)
-                    # Get its value from previous period (after growth)
-                    prev_value = growth.iloc[i - 1, prev_position_index]
+                    try:
+                        prev_position_index = previous_holdings.index(stock_after_rebal)
+                        # Get its value from previous period (after growth)
+                        prev_value = growth.iloc[i - 1, prev_position_index]
+                    except (ValueError, IndexError):
+                        prev_value = None
                 
                 # Calculate absolute difference
                 if prev_value is None:
@@ -352,14 +351,13 @@ def calculate_rebalancing_exposure(holdings: pd.DataFrame,
     
     return exposure_delta
 
-def calculate_contribution_metrics(growth: pd.DataFrame,
-                                  weights: List[float],
-                                  exposure_delta: pd.Series,
-                                  config: PortfolioConfig) -> Tuple[pd.Series, pd.Series]:
+def calculate_gross_contribution(growth: pd.DataFrame,
+                                weights: List[float],
+                                config: PortfolioConfig) -> pd.Series:
     """
-    Step 4b: Calculate gross and net contributions
+    Step 4b: Calculate gross contribution (before transaction costs)
     
-    Returns: (gross_contribution, net_contribution)
+    CORRECTED to match the logic from the correct implementation
     """
     rebalance_period = get_rebalance_periods(config)
     num_positions = config.num_positions
@@ -388,11 +386,24 @@ def calculate_contribution_metrics(growth: pd.DataFrame,
         
         gross_contribution.loc[date] = total_contribution
     
-    # Calculate net contribution (after transaction costs)
-    transaction_costs = exposure_delta * (config.rebalance_cost / 100)
-    net_contribution = gross_contribution - transaction_costs
+    return gross_contribution
+
+def calculate_net_contribution(gross_contribution: pd.Series,
+                              exposure_delta: pd.Series,
+                              config: PortfolioConfig) -> pd.Series:
+    """
+    Step 4c: Calculate net contribution (after transaction costs)
     
-    return gross_contribution, net_contribution
+    CORRECTED to match the exact formula from the correct implementation:
+    rebalance_costs = exposure_delta * (rebalance_cost / 100)
+    """
+    # Calculate transaction costs using the EXACT formula from the correct code
+    rebalance_costs = exposure_delta.map(lambda x: x * (config.rebalance_cost / 100))
+    
+    # Calculate net contribution
+    net_contribution = gross_contribution - rebalance_costs
+    
+    return net_contribution
 
 # ============================================================================
 # STEP 5: PORTFOLIO VALUE COMPOUNDING
@@ -416,14 +427,14 @@ def compound_portfolio_value(net_contribution: pd.Series,
     return pd.Series(portfolio_values, index=net_contribution.index)
 
 # ============================================================================
-# MAIN PORTFOLIO CALCULATION PIPELINE
+# MAIN PORTFOLIO CALCULATION PIPELINE - UPDATED
 # ============================================================================
 
-def execute_portfolio_strategy(config: PortfolioConfig) -> Tuple[pd.Series, pd.DataFrame]:
+def execute_portfolio_strategy(config: PortfolioConfig) -> Tuple[pd.Series, pd.DataFrame, Dict]:
     """
     Execute the complete 5-step portfolio methodology
     
-    Returns: (portfolio_value_series, portfolio_holdings)
+    Returns: (portfolio_value_series, portfolio_holdings, debug_info)
     """
     # Step 0: Load market data
     if not validate_data_files():
@@ -445,14 +456,22 @@ def execute_portfolio_strategy(config: PortfolioConfig) -> Tuple[pd.Series, pd.D
     
     # Step 4: Calculate rebalancing metrics
     exposure_delta = calculate_rebalancing_exposure(holdings, growth, weights, config)
-    gross_contribution, net_contribution = calculate_contribution_metrics(
-        growth, weights, exposure_delta, config
-    )
+    gross_contribution = calculate_gross_contribution(growth, weights, config)
+    net_contribution = calculate_net_contribution(gross_contribution, exposure_delta, config)
     
     # Step 5: Compound portfolio value
     portfolio_value = compound_portfolio_value(net_contribution)
     
-    return portfolio_value, holdings
+    # Collect debug information
+    debug_info = {
+        'weights': weights,
+        'exposure_delta': exposure_delta,
+        'gross_contribution': gross_contribution,
+        'net_contribution': net_contribution,
+        'growth': growth
+    }
+    
+    return portfolio_value, holdings, debug_info
 
 # ============================================================================
 # PERFORMANCE ANALYTICS
@@ -555,7 +574,7 @@ def optimize_portfolio_parameters(target_start: int,
                     config = PortfolioConfig(positions, cash, rebalance, cost)
                     
                     try:
-                        portfolio_value, _ = execute_portfolio_strategy(config)
+                        portfolio_value, _, _ = execute_portfolio_strategy(config)
                         
                         # Extract period
                         if target_end < len(portfolio_value):
@@ -868,6 +887,29 @@ def display_weight_breakdown(config: PortfolioConfig):
     
     st.write(f"**Total Invested: {sum(weights):.2f}%**")
 
+def display_debug_info(debug_info: Dict, config: PortfolioConfig):
+    """Display debug information for verification"""
+    with st.expander("Debug Information"):
+        st.write("**Weights:**", debug_info['weights'])
+        
+        # Show first few exposure deltas
+        st.write("**First 10 Exposure Deltas:**")
+        st.dataframe(debug_info['exposure_delta'].head(10))
+        
+        # Show rebalancing periods with non-zero exposure
+        rebalance_periods = debug_info['exposure_delta'][debug_info['exposure_delta'] > 0]
+        st.write(f"**Rebalancing Events:** {len(rebalance_periods)}")
+        st.dataframe(rebalance_periods.head(10))
+        
+        # Show sample calculations
+        st.write("**Sample Net Contribution Calculation (first 5 periods):**")
+        for i in range(min(5, len(debug_info['gross_contribution']))):
+            gross = debug_info['gross_contribution'].iloc[i]
+            exposure = debug_info['exposure_delta'].iloc[i]
+            cost = exposure * (config.rebalance_cost / 100)
+            net = debug_info['net_contribution'].iloc[i]
+            st.write(f"Period {i}: Gross={gross:.4f}, Exposure={exposure:.4f}, Cost={cost:.4f}, Net={net:.4f}")
+
 # ============================================================================
 # MAIN APPLICATION
 # ============================================================================
@@ -887,7 +929,7 @@ def main():
     
     # Calculate portfolio
     try:
-        portfolio_value, holdings = execute_portfolio_strategy(config)
+        portfolio_value, holdings, debug_info = execute_portfolio_strategy(config)
     except Exception as e:
         st.error(f"Error calculating portfolio: {str(e)}")
         st.stop()
@@ -901,6 +943,9 @@ def main():
     display_monthly_comparison_table(portfolio_value)
     display_optimization_section(portfolio_value)
     display_weight_breakdown(config)
+    
+    # Add debug info section (optional - can be removed in production)
+    display_debug_info(debug_info, config)
     
     # Footer
     st.markdown("---")
