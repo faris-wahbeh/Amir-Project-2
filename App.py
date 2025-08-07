@@ -127,7 +127,7 @@ def calculate_position_weights(num_positions, cash_percentage):
 
 
 def calculate_portfolio_performance_fixed():
-    """Main function to calculate portfolio performance with FIXED rebalancing logic"""
+    """Main function to calculate portfolio performance with CORRECT rebalancing logic"""
     
     # Check files exist
     check_required_files()
@@ -150,12 +150,16 @@ def calculate_portfolio_performance_fixed():
 
     # Initialize tracking variables
     portfolio_values = []
-    position_values = {}  # Track value of each position
+    position_values = [0] * num_positions  # Track USD value of each position
     total_value = 100.0  # Start with $100
+    
+    # Track what ticker is in each position
+    current_holdings = [None] * num_positions
     
     # Initialize positions at t=0
     for j in range(num_positions):
         ticker = portfolio.iloc[0, j]
+        current_holdings[j] = ticker
         position_values[j] = weights[j] * total_value
     
     portfolio_values.append(total_value)
@@ -164,56 +168,46 @@ def calculate_portfolio_performance_fixed():
     for i in range(1, len(portfolio)):
         date = portfolio.index[i]
         
-        # Check if it's a rebalancing period
-        is_rebalancing = (i % rebalance_period == 0)
-        
-        if is_rebalancing:
-            # STEP 1: Apply returns first to get pre-rebalancing values
-            for j in range(num_positions):
-                ticker = portfolio.iloc[i-1, j]  # Previous period's holding
-                if ticker in returns_df.columns and date in returns_df.index:
-                    ret = returns_df.at[date, ticker]
-                else:
-                    ret = 0.0
+        # First, apply returns to all positions (they grow naturally)
+        for j in range(num_positions):
+            ticker = current_holdings[j]
+            if ticker and ticker in returns_df.columns and date in returns_df.index:
+                ret = returns_df.at[date, ticker]
                 position_values[j] *= (1 + ret)
+        
+        # Calculate current total portfolio value after returns
+        total_value = sum(position_values)
+        
+        # Check if it's a rebalancing period
+        if i % rebalance_period == 0:
+            # REBALANCING LOGIC
             
-            # STEP 2: Calculate total portfolio value before rebalancing
-            total_before_rebalancing = sum(position_values.values())
+            # Step 1: Calculate current values before rebalancing
+            current_position_values = position_values.copy()
             
-            # STEP 3: Calculate exposure delta (total amount to be traded)
+            # Step 2: Update holdings to new ranks
+            for j in range(num_positions):
+                current_holdings[j] = portfolio.iloc[i, j]
+            
+            # Step 3: Calculate target values based on weights and current total
+            target_values = [weights[j] * total_value for j in range(num_positions)]
+            
+            # Step 4: Calculate exposure delta (total USD amount being traded)
             exposure_delta = 0.0
             for j in range(num_positions):
-                target_value = weights[j] * total_before_rebalancing
-                current_value = position_values[j]
-                exposure_delta += abs(target_value - current_value)
+                # The amount we need to trade for this position
+                trade_amount = abs(target_values[j] - current_position_values[j])
+                exposure_delta += trade_amount
             
-            # STEP 4: Calculate and apply transaction costs
+            # Step 5: Calculate transaction cost
             transaction_cost = exposure_delta * (rebalance_cost / 100.0)
-            total_after_cost = total_before_rebalancing - transaction_cost
             
-            # STEP 5: Update portfolio holdings to new ranks
-            new_holdings = {}
+            # Step 6: Deduct transaction cost from total portfolio value
+            total_value -= transaction_cost
+            
+            # Step 7: Reset all positions to target weights using the new total
             for j in range(num_positions):
-                new_ticker = portfolio.iloc[i, j]
-                new_holdings[j] = new_ticker
-            
-            # STEP 6: Rebalance to target weights using total after costs
-            for j in range(num_positions):
-                position_values[j] = weights[j] * total_after_cost
-            
-            total_value = total_after_cost
-            
-        else:
-            # Not a rebalancing period - just apply returns
-            for j in range(num_positions):
-                ticker = portfolio.iloc[i-1, j]  # Use previous period's holding
-                if ticker in returns_df.columns and date in returns_df.index:
-                    ret = returns_df.at[date, ticker]
-                else:
-                    ret = 0.0
-                position_values[j] *= (1 + ret)
-            
-            total_value = sum(position_values.values())
+                position_values[j] = weights[j] * total_value
         
         portfolio_values.append(total_value)
     
@@ -225,7 +219,7 @@ def calculate_portfolio_performance_fixed():
 
 def calculate_portfolio_for_period_fixed(num_pos, cash_pct, rebal_freq, rebal_cost,
                                          start_m, end_m):
-    """Calculate portfolio for optimization with FIXED logic"""
+    """Calculate portfolio for optimization with CORRECT logic"""
     try:
         # Load data
         rank_df, price_df = load_and_prepare_data()
@@ -241,14 +235,16 @@ def calculate_portfolio_for_period_fixed(num_pos, cash_pct, rebal_freq, rebal_co
         frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
         rebalance_period = frequency_mapping[rebal_freq]
         
-        # Calculate portfolio values
+        # Initialize tracking variables
         portfolio_values = []
-        position_values = {}
+        position_values = [0] * num_pos
         total_value = 100.0
+        current_holdings = [None] * num_pos
         
-        # Initialize
+        # Initialize at t=0
         for j in range(num_pos):
             ticker = portfolio.iloc[0, j]
+            current_holdings[j] = ticker
             position_values[j] = weights[j] * total_value
         
         portfolio_values.append(total_value)
@@ -256,46 +252,42 @@ def calculate_portfolio_for_period_fixed(num_pos, cash_pct, rebal_freq, rebal_co
         # Process each period
         for i in range(1, len(portfolio)):
             date = portfolio.index[i]
-            is_rebalancing = (i % rebalance_period == 0)
             
-            if is_rebalancing:
-                # Apply returns first
-                for j in range(num_pos):
-                    ticker = portfolio.iloc[i-1, j]
-                    if ticker in returns_df.columns and date in returns_df.index:
-                        ret = returns_df.at[date, ticker]
-                    else:
-                        ret = 0.0
+            # Apply returns to all positions
+            for j in range(num_pos):
+                ticker = current_holdings[j]
+                if ticker and ticker in returns_df.columns and date in returns_df.index:
+                    ret = returns_df.at[date, ticker]
                     position_values[j] *= (1 + ret)
+            
+            # Calculate current total
+            total_value = sum(position_values)
+            
+            # Check if rebalancing period
+            if i % rebalance_period == 0:
+                # Calculate current values before rebalancing
+                current_position_values = position_values.copy()
                 
-                # Calculate rebalancing
-                total_before = sum(position_values.values())
+                # Update holdings
+                for j in range(num_pos):
+                    current_holdings[j] = portfolio.iloc[i, j]
+                
+                # Calculate target values
+                target_values = [weights[j] * total_value for j in range(num_pos)]
+                
+                # Calculate exposure delta
                 exposure_delta = 0.0
                 for j in range(num_pos):
-                    target_value = weights[j] * total_before
-                    current_value = position_values[j]
-                    exposure_delta += abs(target_value - current_value)
+                    trade_amount = abs(target_values[j] - current_position_values[j])
+                    exposure_delta += trade_amount
                 
-                # Apply costs
+                # Apply transaction cost
                 transaction_cost = exposure_delta * (rebal_cost / 100.0)
-                total_after = total_before - transaction_cost
+                total_value -= transaction_cost
                 
-                # Rebalance
+                # Reset positions to target weights
                 for j in range(num_pos):
-                    position_values[j] = weights[j] * total_after
-                
-                total_value = total_after
-            else:
-                # Just apply returns
-                for j in range(num_pos):
-                    ticker = portfolio.iloc[i-1, j]
-                    if ticker in returns_df.columns and date in returns_df.index:
-                        ret = returns_df.at[date, ticker]
-                    else:
-                        ret = 0.0
-                    position_values[j] *= (1 + ret)
-                
-                total_value = sum(position_values.values())
+                    position_values[j] = weights[j] * total_value
             
             portfolio_values.append(total_value)
         
