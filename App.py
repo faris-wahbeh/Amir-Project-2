@@ -1,3 +1,4 @@
+
 # app.py - Portfolio Strategy Analyzer with Backend Matching Older Code
 # Backend rewritten to match exact methodology from reference implementation
 
@@ -104,7 +105,7 @@ def calculate_position_percentages(num_positions: int, cash_percentage: float) -
     if num_positions <= 5:
         highest_percentage = 0.3 * total_percentage
     else:
-        highest_percentage = 0.3 * total_percentage - (num_positions - 5) * 0.03 * total_percentage
+        highest_percentage = 0.3 * total_percentage - (num_positions - 5) * 0.02 * total_percentage - (15 - num_positions)
     
     sum_percentages = total_percentage
     n = num_positions
