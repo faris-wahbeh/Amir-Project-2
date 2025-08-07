@@ -74,20 +74,41 @@ def validate_data_files() -> bool:
 @st.cache_data
 def load_market_data() -> MarketData:
     """Load and prepare all market data"""
-    # Load raw data
     rank_df = pd.read_csv('Rank.csv', index_col=0, parse_dates=True, dayfirst=True)
     price_df = pd.read_csv('Prices.csv', index_col=0, parse_dates=True, dayfirst=True)
 
-    # Calculate returns as decimals (0.01 for 1% return)
-    returns_df = price_df.pct_change(fill_method=None).fillna(0.0)
+    # Normalize column names a bit (helps common dot/dash variants)
+    def _norm(cols):
+        return (pd.Index(cols)
+                  .astype(str)
+                  .str.strip()
+                  .str.replace(' ', '', regex=False))
+    rank_df.columns = _norm(rank_df.columns)
+    price_df.columns = _norm(price_df.columns)
 
-    # Ensure indices align and are sorted
-    common_index = rank_df.index.intersection(returns_df.index)
+    # Align by dates
+    common_index = rank_df.index.intersection(price_df.index)
     rank_df = rank_df.loc[common_index].sort_index()
     price_df = price_df.loc[common_index].sort_index()
-    returns_df = returns_df.loc[common_index].sort_index()
+
+    # Align by tickers (IMPORTANT)
+    common_cols = rank_df.columns.intersection(price_df.columns)
+    missing_in_prices = set(rank_df.columns) - set(common_cols)
+    missing_in_rank   = set(price_df.columns) - set(common_cols)
+    if missing_in_prices:
+        st.warning(f"{len(missing_in_prices)} tickers present in Rank.csv but missing in Prices.csv "
+                   f"(showing up to 10): {sorted(list(missing_in_prices))[:10]}")
+    if missing_in_rank:
+        st.info(f"{len(missing_in_rank)} tickers present in Prices.csv but not in Rank.csv "
+                f"(showing up to 10): {sorted(list(missing_in_rank))[:10]}")
+
+    rank_df = rank_df[common_cols]
+    price_df = price_df[common_cols]
+
+    returns_df = price_df.pct_change(fill_method=None).fillna(0.0)
 
     return MarketData(rank_df, price_df, returns_df)
+
 
 def get_actual_portfolio_returns() -> List[float]:
     """Get flattened list of actual portfolio returns (% per month)"""
