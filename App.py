@@ -1,770 +1,976 @@
-# app.py - Correctly Fixed Rebalancing Logic
+# app.py - Portfolio Strategy Analyzer with Clean Architecture
+# Following the exact methodology from the LaTeX document
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from pathlib import Path
 import itertools
-import os
+from dataclasses import dataclass
+from typing import Tuple, Optional, List
+import warnings
+warnings.filterwarnings('ignore')
 
-# ─── Page Setup ────────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Portfolio Strategy Analyzer",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# ============================================================================
+# DATA CLASSES FOR TYPE SAFETY
+# ============================================================================
 
-# Hide Streamlit header/menu/footer
-st.markdown(
-    """
-    <style>
-      #MainMenu {visibility: hidden;}
-      footer {visibility: hidden;}
-      header {visibility: hidden;}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# ─── File Check Helper ────────────────────────────────────────────────────────
-def check_required_files():
-    base = Path(".")
-    rank_file = base / "Rank.csv"
-    prices_file = base / "Prices.csv"
-
-    missing_files = []
-    if not rank_file.exists():
-        missing_files.append("Rank.csv")
-    if not prices_file.exists():
-        missing_files.append("Prices.csv")
-
-    if missing_files:
-        st.error(f"Missing required files: {', '.join(missing_files)}")
-        st.info("Please upload the following files to your Replit workspace:")
-        for file in missing_files:
-            st.code(f"• {file}")
-        st.stop()
-
-    return rank_file, prices_file
-
-
-# ─── Sidebar ───────────────────────────────────────────────────────────────────
-st.sidebar.header("Portfolio Parameters")
-
-num_positions = st.sidebar.slider("Number of Positions", 5, 15, 15, 1)
-cash_percentage = st.sidebar.slider("Cash Percentage (%)", 0, 50, 0, 1)
-rebalance_frequency = st.sidebar.selectbox(
-    "Rebalance Frequency", ["monthly", "quarterly", "semi-yearly"], index=0)
-rebalance_cost = st.sidebar.slider("Rebalance Cost (%)",
-                                   0.0,
-                                   5.0,
-                                   2.00,
-                                   0.01,
-                                   format="%.2f")
-
-
-# ─── Data Functions ─────────────────────────────────────────────────
-@st.cache_data
-def load_and_prepare_data():
-    """Load rank and price data from CSV files"""
-    rank_df = pd.read_csv('Rank.csv', index_col=0, parse_dates=True, dayfirst=True)
-    price_df = pd.read_csv('Prices.csv', index_col=0, parse_dates=True, dayfirst=True)
-    return rank_df, price_df
-
-
-@st.cache_data
-def calculate_returns_from_prices(price_df):
-    """Calculate returns from price data"""
-    returns_df = price_df.pct_change(fill_method=None)
-    returns_df = returns_df.fillna(0)
-    # Convert to percentage for calculations
-    returns_df = returns_df * 100
-    return returns_df
-
-
-def calculate_position_weights(num_positions, cash_percentage):
-    """Calculate position weights with linear decrease (returns percentages not decimals)"""
-    total_percentage = 100.0 - cash_percentage
+@dataclass
+class PortfolioParameters:
+    """Encapsulates all portfolio configuration parameters"""
+    num_positions: int
+    cash_percentage: float
+    rebalance_frequency: str
+    rebalance_cost: float
     
-    if num_positions <= 5:
-        highest_percentage = 0.3 * total_percentage
-    else:
-        highest_percentage = 0.3 * total_percentage - (num_positions - 5) * 0.02 * total_percentage - (15 - num_positions)
+    @property
+    def rebalance_period(self) -> int:
+        """Convert rebalance frequency to number of periods"""
+        mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
+        return mapping[self.rebalance_frequency]
     
-    if num_positions > 1:
-        # Calculate common difference for arithmetic series
-        common_difference = (2 * (highest_percentage * num_positions) - 2 * total_percentage) / (num_positions * (num_positions - 1))
-        percentages = [highest_percentage - i * common_difference for i in range(num_positions)]
-    else:
-        percentages = [total_percentage]
-    
-    return percentages  # Returns as percentages (e.g., 30.0 for 30%)
+    @property
+    def investable_percentage(self) -> float:
+        """Calculate investable percentage after cash allocation"""
+        return 100.0 - self.cash_percentage
 
 
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
 
-@st.cache_data
-def generate_portfolio(rank_df, number_of_positions, rebalance_frequency):
-    """Generate portfolio holdings based on rebalancing frequency"""
-    frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
-    rebalance_period = frequency_mapping[rebalance_frequency]
+class Config:
+    """Central configuration for the application"""
+    RANK_FILE = "Rank.csv"
+    PRICES_FILE = "Prices.csv"
+    INITIAL_INVESTMENT = 100.0
     
-    portfolio = pd.DataFrame(index=rank_df.index, columns=range(number_of_positions))
-    current_holdings = []
-    
-    for i, (date, row) in enumerate(rank_df.iterrows()):
-        if i % rebalance_period == 0:
-            current_holdings = row.iloc[:number_of_positions].tolist()
-        portfolio.loc[date] = current_holdings
-    
-    return portfolio
-
-
-def generate_returns_portfolio(portfolio, returns_df):
-    """Map returns to portfolio positions"""
-    returns_portfolio = pd.DataFrame(index=portfolio.index, columns=portfolio.columns)
-    
-    for date in portfolio.index:
-        if date in returns_df.index:
-            portfolio_row = portfolio.loc[date]
-            current_returns = []
-            for position in portfolio_row:
-                if position in returns_df.columns:
-                    return_value = returns_df.at[date, position]
-                    current_returns.append(return_value)
-                else:
-                    current_returns.append(0.0)
-            returns_portfolio.loc[date] = current_returns
-    
-    return returns_portfolio
-
-
-def calculate_portfolio_growth(num_positions, cash_percentage, returns_portfolio, rebalance_frequency):
-    """Calculate portfolio growth with proper rebalancing"""
-    position_percentages = calculate_position_weights(num_positions, cash_percentage)
-    portfolio_growth = pd.DataFrame(index=returns_portfolio.index, columns=returns_portfolio.columns, dtype=float)
-    
-    frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
-    rebalance_period = frequency_mapping[rebalance_frequency]
-    
-    for i, date in enumerate(returns_portfolio.index):
-        if i % rebalance_period == 0:
-            # Rebalancing period - reset to target percentages
-            current_percentages = position_percentages.copy()
-        else:
-            # Not rebalancing - use previous values
-            current_percentages = portfolio_growth.iloc[i - 1].tolist()
-        
-        current_growth = []
-        for col_index in range(num_positions):
-            return_value = returns_portfolio.iloc[i, col_index]
-            if pd.isna(return_value):
-                return_value = 0
-            # Apply return to current percentage
-            new_value = current_percentages[col_index] * (1 + return_value / 100)
-            current_growth.append(new_value)
-        
-        portfolio_growth.iloc[i] = current_growth
-    
-    return portfolio_growth
-
-
-def calculate_exposure_delta(portfolio, portfolio_growth, num_positions, cash_percentage, rebalance_frequency):
-    """Calculate exposure delta for rebalancing costs"""
-    reset_percentages = calculate_position_weights(num_positions, cash_percentage)
-    summed_exposure_delta = pd.Series(index=portfolio.index, dtype=float)
-    
-    frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
-    rebalance_period = frequency_mapping[rebalance_frequency]
-    
-    for i, date in enumerate(portfolio.index):
-        if i == 0:
-            # First period - special case
-            summed_delta = 10 * num_positions
-        elif i % rebalance_period == 0:
-            # Rebalancing period - calculate actual exposure delta
-            summed_delta = 0
-            for col_index in range(num_positions):
-                reset_value = reset_percentages[col_index]
-                stock_name = portfolio.iloc[i, col_index]
-                
-                # Find previous value of this stock if it was in the portfolio
-                prev_value = None
-                prev_date = portfolio.index[i - 1]
-                if stock_name in portfolio.loc[prev_date].values:
-                    stock_col_index = portfolio.loc[prev_date].tolist().index(stock_name)
-                    prev_value = portfolio_growth.iloc[i - 1, stock_col_index]
-                
-                # Calculate delta
-                if prev_value is None:
-                    delta = reset_value
-                else:
-                    delta = abs(reset_value - prev_value)
-                
-                summed_delta += delta
-        else:
-            # Non-rebalancing period - no trading
-            summed_delta = 0
-        
-        summed_exposure_delta.loc[date] = summed_delta
-    
-    return summed_exposure_delta
-
-
-def calculate_gross_contribution(portfolio_growth, num_positions, cash_percentage, rebalance_frequency):
-    """Calculate gross contribution (returns before costs)"""
-    reset_percentages = calculate_position_weights(num_positions, cash_percentage)
-    frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
-    rebalance_period = frequency_mapping[rebalance_frequency]
-    
-    gross_contribution = pd.Series(index=portfolio_growth.index, dtype=float)
-    
-    for i, date in enumerate(portfolio_growth.index):
-        total_contribution = 0
-        
-        for col_index in range(num_positions):
-            current_value = portfolio_growth.iloc[i, col_index]
-            
-            if i == 0:
-                # First period - contribution from initial weight
-                contribution = current_value - reset_percentages[col_index]
-            elif i % rebalance_period == 0:
-                # Rebalance period - contribution from reset weight
-                contribution = current_value - reset_percentages[col_index]
-            else:
-                # Regular period - contribution from previous value
-                prev_value = portfolio_growth.iloc[i - 1, col_index]
-                contribution = current_value - prev_value
-            
-            total_contribution += contribution
-        
-        gross_contribution.loc[date] = total_contribution
-    
-    return gross_contribution
-
-
-def calculate_net_contribution(gross_contribution, exposure_delta, rebalance_cost):
-    """Calculate net contribution after rebalancing costs"""
-    rebalance_costs = exposure_delta * (rebalance_cost / 100)
-    net_contribution = gross_contribution - rebalance_costs
-    return net_contribution
-
-
-def calculate_compounded_growth(net_contribution):
-    """Calculate compounded portfolio value"""
-    initial_investment = 100.0
-    compounded_values = []
-    investment_value = initial_investment
-    
-    for date, contribution in net_contribution.items():
-        investment_value *= (1 + contribution / 100)
-        compounded_values.append(investment_value)
-    
-    return pd.Series(compounded_values, index=net_contribution.index)
-
-
-def calculate_portfolio_performance_fixed():
-    """Main function using the correct logic from reference code"""
-    
-    # Check files exist
-    check_required_files()
-    
-    # Load data
-    rank_df, price_df = load_and_prepare_data()
-    
-    # Calculate returns
-    returns_df = calculate_returns_from_prices(price_df)
-    
-    # Generate portfolio
-    portfolio = generate_portfolio(rank_df, num_positions, rebalance_frequency)
-    
-    # Generate returns portfolio
-    returns_portfolio = generate_returns_portfolio(portfolio, returns_df)
-    
-    # Calculate portfolio growth
-    portfolio_growth = calculate_portfolio_growth(num_positions, cash_percentage, returns_portfolio, rebalance_frequency)
-    
-    # Calculate gross contribution
-    gross_contribution = calculate_gross_contribution(portfolio_growth, num_positions, cash_percentage, rebalance_frequency)
-    
-    # Calculate exposure delta
-    exposure_delta = calculate_exposure_delta(portfolio, portfolio_growth, num_positions, cash_percentage, rebalance_frequency)
-    
-    # Calculate net contribution
-    net_contribution = calculate_net_contribution(gross_contribution, exposure_delta, rebalance_cost)
-    
-    # Calculate compounded growth
-    compounded_growth = calculate_compounded_growth(net_contribution)
-    
-    return compounded_growth, portfolio
-
-
-def calculate_portfolio_for_period_fixed(num_pos, cash_pct, rebal_freq, rebal_cost, start_m, end_m):
-    """Calculate portfolio for optimization period"""
-    try:
-        # Load data
-        rank_df, price_df = load_and_prepare_data()
-        returns_df = calculate_returns_from_prices(price_df)
-        
-        # Generate portfolio
-        portfolio = generate_portfolio(rank_df, num_pos, rebal_freq)
-        
-        # Generate returns portfolio
-        returns_portfolio = generate_returns_portfolio(portfolio, returns_df)
-        
-        # Calculate portfolio growth
-        portfolio_growth = calculate_portfolio_growth(num_pos, cash_pct, returns_portfolio, rebal_freq)
-        
-        # Calculate gross contribution
-        gross_contribution = calculate_gross_contribution(portfolio_growth, num_pos, cash_pct, rebal_freq)
-        
-        # Calculate exposure delta
-        exposure_delta = calculate_exposure_delta(portfolio, portfolio_growth, num_pos, cash_pct, rebal_freq)
-        
-        # Calculate net contribution
-        net_contribution = calculate_net_contribution(gross_contribution, exposure_delta, rebal_cost)
-        
-        # Calculate compounded growth
-        compounded_growth = calculate_compounded_growth(net_contribution)
-        
-        # Extract period
-        max_idx = len(compounded_growth) - 1
-        start_idx = min(start_m, max_idx)
-        end_idx = min(end_m, max_idx)
-        
-        if start_idx > end_idx:
-            return None
-        
-        series = compounded_growth.iloc[start_idx:end_idx + 1].values
-        if len(series) > 0:
-            series = series * 100 / series[0]
-        return series
-        
-    except Exception as e:
-        print(f"Error in calculate_portfolio_for_period: {e}")
-        return None
-
-
-@st.cache_data
-def get_actual_gross_returns():
-    data = {
+    # Actual portfolio returns for comparison
+    ACTUAL_RETURNS = {
         '2018': [4.7, 0.4, 1.2, 2.8, 5.1, 5.4, 1.1, 7.1, 0.7, -8.5, 3.4, -8.3],
         '2019': [8.6, 8.9, 3.2, 4.9, -2.5, 6.7, 3.2, -0.4, -6.5, 0.4, 5.5, 0.6],
         '2020': [5.5, -6.6, -14.3, 14.2, 9.0, 3.9, 5.9, 6.6, -3.1, -3.7, 11.8, 7.2],
         '2021': [-2.5, 8.2, -6.8, 4.9, -6.3, 6.3, 3.6, 5.2, -2.2, 3.1, -1.8, -0.1],
         '2022': [-12.9, -0.5, -2.1, -8.9, -9.5, -8.2, 9.1, -3.1, -8.1, 3.6, 4.0, -2.4]
     }
-    seq = []
-    for y in sorted(data):
-        seq.extend(data[y])
-    return seq
-
-
-def create_comparison_chart(portfolio_value):
-    gross = get_actual_gross_returns()
-    actual = [100.0]
-    for r in gross[:len(portfolio_value)]:
-        actual.append(actual[-1] * (1 + r / 100))
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(x=list(range(len(portfolio_value))),
-                   y=portfolio_value.values,
-                   mode="lines",
-                   name="Strategy",
-                   line=dict(width=2, color='#1f77b4')))
-    fig.add_trace(
-        go.Scatter(x=list(range(len(actual))),
-                   y=actual[:len(portfolio_value)],
-                   mode="lines",
-                   name="Actual",
-                   line=dict(width=2, dash="dash", color='#ff7f0e')))
-    fig.update_layout(
-        template="simple_white",
-        margin=dict(l=40, r=20, t=40, b=40),
-        xaxis_title="Months",
-        yaxis_title="Portfolio Value ($)",
-        height=500,
-    )
-    return fig, actual
-
-
-def calculate_volatility(values):
-    """Calculate annualized volatility from portfolio values"""
-    if len(values) < 2:
-        return 0.0
-
-    # Calculate monthly returns
-    returns = []
-    for i in range(1, len(values)):
-        monthly_return = (values[i] / values[i-1] - 1)
-        returns.append(monthly_return)
-
-    if len(returns) == 0:
-        return 0.0
-
-    # Calculate standard deviation of returns
-    returns_std = np.std(returns, ddof=1)
-
-    # Annualize volatility (multiply by sqrt(12) for monthly data)
-    annualized_volatility = returns_std * np.sqrt(12) * 100
-
-    return annualized_volatility
-
-
-def calculate_error(strategy, actual):
-    if len(strategy) != len(actual) or len(strategy) == 0:
-        return float('inf')
-
-    # Calculate percentage errors
-    errs = []
-    for s, a in zip(strategy, actual):
-        if a != 0:
-            errs.append(((s - a) / a * 100)**2)
-        else:
-            errs.append((s - a)**2)
-
-    # Return root mean square error
-    return np.sqrt(np.mean(errs))
-
-
-def find_optimal_parameters(start_month, end_month, rebalance_filter):
-    gross = get_actual_gross_returns()
-
-    # First build complete actual returns series
-    actual_full = [100.0]
-    for r in gross:
-        actual_full.append(actual_full[-1] * (1 + r / 100))
-
-    # Extract the period we want
-    max_idx = len(actual_full) - 1
-    start_idx = min(start_month, max_idx)
-    end_idx = min(end_month, max_idx)
-
-    if start_idx > end_idx:
-        st.error("Invalid period selection")
-        return None
-
-    actual = actual_full[start_idx:end_idx + 1]
-
-    # Normalize to start at 100
-    if len(actual) > 0:
-        actual = [v * 100 / actual[0] for v in actual]
-
-    positions_range = list(range(5, 16))
-    cash_range = list(range(0, 31, 5))
-    rebalance_options = (['monthly', 'quarterly', 'semi-yearly']
-                         if rebalance_filter == 'any' else [rebalance_filter])
-    cost_range = [0.0, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0]
-
-    best, best_err = None, float('inf')
-    total = (len(positions_range) * len(cash_range) * len(rebalance_options) *
-             len(cost_range))
-    pb = st.progress(0)
-    status = st.empty()
-
-    valid_combinations = 0
-
-    for i, (pos, cash, reb, cost) in enumerate(
-            itertools.product(positions_range, cash_range, rebalance_options,
-                              cost_range)):
-        status.text(
-            f"Testing {i+1}/{total}: pos={pos}, cash={cash}%, reb={reb}, cost={cost:.2f}%"
-        )
-
-        series = calculate_portfolio_for_period_fixed(pos, cash, reb, cost,
-                                                      start_month, end_month)
-        if series is not None and len(series) == len(actual):
-            valid_combinations += 1
-            err = calculate_error(series, actual)
-            if err < best_err:
-                best_err, best = err, {
-                    'num_positions': pos,
-                    'cash_percentage': cash,
-                    'rebalance_frequency': reb,
-                    'rebalance_cost': cost,
-                    'error': err,
-                    'strategy_values': series,
-                    'actual_values': actual
-                }
-
-        pb.progress((i + 1) / total)
-
-    pb.empty()
-    status.empty()
-
-    if valid_combinations == 0:
-        st.warning(
-            f"No valid combinations found. Tested {total} combinations but none produced valid results for the selected period."
-        )
-
-    return best
-
-
-def create_optimization_chart(opt):
-    x = list(range(len(opt['strategy_values'])))
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(x=x,
-                   y=opt['strategy_values'],
-                   mode='lines',
-                   name='Optimal Strategy',
-                   line=dict(color='green', width=2)))
-    fig.add_trace(
-        go.Scatter(x=x,
-                   y=opt['actual_values'],
-                   mode='lines',
-                   name='Actual',
-                   line=dict(color='red', width=2, dash='dash')))
-    fig.update_layout(template='simple_white',
-                      margin=dict(l=40, r=20, t=40, b=40),
-                      xaxis_title="Months in Period",
-                      yaxis_title="Normalized Value",
-                      height=400)
-    return fig
-
-
-# ─── Main App ─────────────────────────────────────────────────────────────────
-st.title("Portfolio Strategy Analyzer")
-st.markdown("Analyze and optimize portfolio strategies using historical data")
-st.markdown("---")
-
-# Calculate portfolio performance with FIXED logic
-try:
-    portfolio_value, portfolio = calculate_portfolio_performance_fixed()
-    if portfolio_value is None:
-        st.stop()
-except Exception as e:
-    st.error(f"Error calculating portfolio performance: {str(e)}")
-    st.stop()
-
-# Main chart
-fig, actual = create_comparison_chart(portfolio_value)
-st.plotly_chart(fig, use_container_width=True)
-
-# Metrics
-st.markdown("---")
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-sf = portfolio_value.iloc[-1]
-
-# Handle case where portfolio data is longer than actual data
-if len(portfolio_value) < len(actual):
-    af = actual[len(portfolio_value)]
-    ar = (af - 100) / 100 * 100
-    outperformance_available = True
-    actual_for_volatility = actual[:len(portfolio_value)]
-else:
-    # Use the last available actual data point
-    af = actual[-1] if actual else 100.0
-    ar = (af - 100) / 100 * 100 if actual else 0.0
-    outperformance_available = len(actual) > 0
-    actual_for_volatility = actual
-
-sr = (sf - 100) / 100 * 100
-
-# Calculate volatilities
-strategy_volatility = calculate_volatility(portfolio_value.values)
-actual_volatility = calculate_volatility(actual_for_volatility) if actual_for_volatility else 0.0
-
-c1.metric("Strategy Final", f"${sf:.2f}", f"{sr:+.1f}%")
-c2.metric("Actual Final", f"${af:.2f}", f"{ar:+.1f}%")
-if outperformance_available:
-    c3.metric("Outperformance", f"{(sr-ar):+.1f}%")
-else:
-    c3.metric("Outperformance", "N/A")
-yrs = len(portfolio_value) / 12
-c4.metric("Annualized", f"{((sf/100)**(1/yrs)-1)*100:.1f}%")
-c5.metric("Strategy Volatility", f"{strategy_volatility:.1f}%")
-c6.metric("Actual Volatility", f"{actual_volatility:.1f}%")
-
-st.caption("💡 Volatility is calculated as the annualized standard deviation of monthly returns (std × √12)")
-
-
-# Monthly Comparison Table
-st.markdown("---")
-st.subheader("Monthly Performance Comparison")
-
-# Create monthly comparison data
-months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct',
-    'Nov', 'Dec'
-]
-years = ['2018', '2019', '2020', '2021', '2022']
-
-# Get actual returns data
-gross_returns = get_actual_gross_returns()
-
-# Calculate strategy monthly returns properly
-strategy_monthly_returns = []
-
-# Calculate month-over-month returns from portfolio value
-for i in range(len(portfolio_value) - 1):
-    monthly_return = (portfolio_value.iloc[i + 1] / portfolio_value.iloc[i] - 1) * 100
-    strategy_monthly_returns.append(monthly_return)
-
-# Create restructured table with years as rows and months as columns
-table_data = {}
-month_idx = 0
-
-for year in years:
-    year_data = {'Year': year}
-    year_strategy_returns = []
-    year_actual_returns = []
-
-    for month in months:
-        if month_idx < len(gross_returns) and month_idx < len(strategy_monthly_returns):
-            actual_ret = gross_returns[month_idx]
-            strategy_ret = strategy_monthly_returns[month_idx]
-
-            year_strategy_returns.append(strategy_ret)
-            year_actual_returns.append(actual_ret)
-
-            # Format cell with both values
-            cell_value = f"T: {strategy_ret:.1f}%\nA: {actual_ret:.1f}%"
-            year_data[month] = cell_value
-            month_idx += 1
-        elif month_idx < len(strategy_monthly_returns):
-            # Only strategy data available (new data beyond actual)
-            strategy_ret = strategy_monthly_returns[month_idx]
-            year_strategy_returns.append(strategy_ret)
-
-            cell_value = f"T: {strategy_ret:.1f}%\nA: N/A"
-            year_data[month] = cell_value
-            month_idx += 1
-        elif month_idx < len(gross_returns):
-            # Only actual data available
-            actual_ret = gross_returns[month_idx]
-            year_actual_returns.append(actual_ret)
-
-            cell_value = f"T: N/A\nA: {actual_ret:.1f}%"
-            year_data[month] = cell_value
-            month_idx += 1
-        else:
-            year_data[month] = ""
-
-    # Hardcoded actual yearly returns
-    hardcoded_actual_yearly = {
+    
+    ACTUAL_YEARLY_RETURNS = {
         '2018': 14.5,
         '2019': 36.5,
         '2020': 37.7,
         '2021': 10.6,
         '2022': -34.3
     }
+
+
+# ============================================================================
+# DATA LOADING AND PREPROCESSING
+# ============================================================================
+
+class DataLoader:
+    """Handles all data loading and initial processing"""
     
-    # Calculate yearly totals
-    if year_strategy_returns:
-        strategy_yearly = (
-            (np.prod([1 + r / 100 for r in year_strategy_returns]) - 1) * 100)
-        actual_yearly = hardcoded_actual_yearly.get(year, 0.0)
-        year_data[
-            'Yearly Total'] = f"T: {strategy_yearly:.1f}%\nA: {actual_yearly:.1f}%"
-    else:
-        actual_yearly = hardcoded_actual_yearly.get(year, 0.0)
-        year_data['Yearly Total'] = f"T: N/A\nA: {actual_yearly:.1f}%"
+    @staticmethod
+    def check_required_files() -> Tuple[Path, Path]:
+        """Verify that required data files exist"""
+        base = Path(".")
+        rank_file = base / Config.RANK_FILE
+        prices_file = base / Config.PRICES_FILE
+        
+        missing_files = []
+        if not rank_file.exists():
+            missing_files.append(Config.RANK_FILE)
+        if not prices_file.exists():
+            missing_files.append(Config.PRICES_FILE)
+        
+        if missing_files:
+            st.error(f"Missing required files: {', '.join(missing_files)}")
+            st.info("Please upload the following files to your workspace:")
+            for file in missing_files:
+                st.code(f"• {file}")
+            st.stop()
+        
+        return rank_file, prices_file
+    
+    @staticmethod
+    @st.cache_data
+    def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Load rank and price data from CSV files"""
+        rank_df = pd.read_csv(Config.RANK_FILE, index_col=0, parse_dates=True, dayfirst=True)
+        price_df = pd.read_csv(Config.PRICES_FILE, index_col=0, parse_dates=True, dayfirst=True)
+        return rank_df, price_df
+    
+    @staticmethod
+    @st.cache_data
+    def calculate_returns(price_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate percentage returns from price data
+        Returns: DataFrame with returns as percentages (e.g., 2.5 for 2.5%)
+        """
+        returns_df = price_df.pct_change(fill_method=None)
+        returns_df = returns_df.fillna(0)
+        returns_df = returns_df * 100  # Convert to percentage
+        return returns_df
+    
+    @staticmethod
+    def get_actual_returns() -> List[float]:
+        """Get flattened list of actual portfolio returns"""
+        returns = []
+        for year in sorted(Config.ACTUAL_RETURNS.keys()):
+            returns.extend(Config.ACTUAL_RETURNS[year])
+        return returns
 
-    table_data[year] = year_data
 
-# Convert to DataFrame
-if table_data:
-    df_rows = list(table_data.values())
-    df_table = pd.DataFrame(df_rows)
+# ============================================================================
+# PORTFOLIO WEIGHT CALCULATIONS
+# ============================================================================
 
-    # Define styling function
-    def style_cells(val):
-        if not val or val == "":
-            return ''
+class WeightCalculator:
+    """Handles all weight calculation logic following arithmetic series approach"""
+    
+    @staticmethod
+    def calculate_position_weights(params: PortfolioParameters) -> List[float]:
+        """
+        Calculate position weights using arithmetic series
+        Returns: List of weights as percentages (e.g., 30.0 for 30%)
+        
+        From methodology:
+        - Weights decrease linearly from top to bottom position
+        - Sum of weights equals investable percentage
+        """
+        investable = params.investable_percentage
+        
+        # Calculate maximum weight for top position
+        if params.num_positions <= 5:
+            max_weight = 0.3 * investable
+        else:
+            max_weight = (0.3 * investable - 
+                         (params.num_positions - 5) * 0.02 * investable - 
+                         (15 - params.num_positions))
+        
+        if params.num_positions > 1:
+            # Calculate common difference for arithmetic series
+            # Formula: d = 2(w_max * n - S) / (n * (n-1))
+            n = params.num_positions
+            common_diff = (2 * (max_weight * n - investable)) / (n * (n - 1))
+            
+            # Generate weights: w_i = w_max - (i * d)
+            weights = [max_weight - i * common_diff for i in range(n)]
+        else:
+            weights = [investable]
+        
+        return weights
 
-        # Extract theoretical and actual values for comparison
-        try:
-            lines = val.split('\n')
-            if len(lines) == 2:
-                theoretical = float(lines[0].split(': ')[1].replace('%', ''))
-                actual = float(lines[1].split(': ')[1].replace('%', ''))
-                diff = theoretical - actual
 
-                if diff > 0:
-                    return 'background-color: #d4edda; color: #155724'  # Light green for outperformance
-                elif diff < 0:
-                    return 'background-color: #f8d7da; color: #721c24'  # Light red for underperformance
+# ============================================================================
+# PORTFOLIO GENERATION
+# ============================================================================
+
+class PortfolioGenerator:
+    """Handles portfolio generation based on rank data and rebalancing frequency"""
+    
+    @staticmethod
+    @st.cache_data
+    def generate_portfolio(rank_df: pd.DataFrame, params: PortfolioParameters) -> pd.DataFrame:
+        """
+        Generate portfolio holdings based on rebalancing frequency
+        
+        Key concept from methodology:
+        - Rank file updates daily but portfolio only updates at rebalancing periods
+        - Between rebalancing periods, maintain same holdings
+        """
+        portfolio = pd.DataFrame(index=rank_df.index, 
+                                columns=range(params.num_positions))
+        current_holdings = []
+        
+        for i, (date, row) in enumerate(rank_df.iterrows()):
+            if i % params.rebalance_period == 0:
+                # Rebalancing period: update to current top ranks
+                current_holdings = row.iloc[:params.num_positions].tolist()
+            # Otherwise maintain previous holdings
+            portfolio.loc[date] = current_holdings
+        
+        return portfolio
+    
+    @staticmethod
+    def map_returns_to_portfolio(portfolio: pd.DataFrame, 
+                                 returns_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Map returns to portfolio positions
+        Creates matrix where each cell contains the return for that position on that date
+        """
+        returns_portfolio = pd.DataFrame(index=portfolio.index, 
+                                        columns=portfolio.columns)
+        
+        for date in portfolio.index:
+            if date in returns_df.index:
+                portfolio_row = portfolio.loc[date]
+                current_returns = []
+                
+                for position in portfolio_row:
+                    if position in returns_df.columns:
+                        return_value = returns_df.at[date, position]
+                        current_returns.append(return_value)
+                    else:
+                        current_returns.append(0.0)
+                
+                returns_portfolio.loc[date] = current_returns
+        
+        return returns_portfolio
+
+
+# ============================================================================
+# PORTFOLIO CALCULATIONS
+# ============================================================================
+
+class PortfolioCalculator:
+    """Core portfolio calculation engine following the 5-step methodology"""
+    
+    @staticmethod
+    def calculate_portfolio_growth(returns_portfolio: pd.DataFrame,
+                                  weights: List[float],
+                                  params: PortfolioParameters) -> pd.DataFrame:
+        """
+        Step 3: Calculate Portfolio Growth
+        
+        - At rebalancing periods: reset to target weights
+        - Between periods: positions grow naturally with returns
+        """
+        portfolio_growth = pd.DataFrame(index=returns_portfolio.index,
+                                       columns=returns_portfolio.columns,
+                                       dtype=float)
+        
+        for i, date in enumerate(returns_portfolio.index):
+            if i % params.rebalance_period == 0:
+                # Rebalancing: reset to target percentages
+                current_percentages = weights.copy()
+            else:
+                # No rebalancing: use previous values
+                current_percentages = portfolio_growth.iloc[i - 1].tolist()
+            
+            # Apply returns to current percentages
+            current_growth = []
+            for col_index in range(params.num_positions):
+                return_value = returns_portfolio.iloc[i, col_index]
+                if pd.isna(return_value):
+                    return_value = 0
+                
+                # Growth formula: V_t = V_(t-1) * (1 + r_t/100)
+                new_value = current_percentages[col_index] * (1 + return_value / 100)
+                current_growth.append(new_value)
+            
+            portfolio_growth.iloc[i] = current_growth
+        
+        return portfolio_growth
+    
+    @staticmethod
+    def calculate_exposure_delta(portfolio: pd.DataFrame,
+                                portfolio_growth: pd.DataFrame,
+                                weights: List[float],
+                                params: PortfolioParameters) -> pd.Series:
+        """
+        Step 4a: Calculate Exposure Delta
+        
+        Total USD amount being traded at each rebalancing period
+        """
+        exposure_delta = pd.Series(index=portfolio.index, dtype=float)
+        
+        for i, date in enumerate(portfolio.index):
+            if i == 0:
+                # First period: special initialization case
+                delta = 10 * params.num_positions
+            elif i % params.rebalance_period == 0:
+                # Rebalancing period: calculate total amount traded
+                delta = 0
+                
+                for col_index in range(params.num_positions):
+                    target_weight = weights[col_index]
+                    current_stock = portfolio.iloc[i, col_index]
+                    
+                    # Find previous value of this stock if it was in portfolio
+                    prev_value = None
+                    prev_date = portfolio.index[i - 1]
+                    prev_holdings = portfolio.loc[prev_date].tolist()
+                    
+                    if current_stock in prev_holdings:
+                        prev_position_index = prev_holdings.index(current_stock)
+                        prev_value = portfolio_growth.iloc[i - 1, prev_position_index]
+                    
+                    # Calculate absolute difference
+                    if prev_value is None:
+                        # Stock is new to portfolio
+                        delta += target_weight
+                    else:
+                        # Stock was in portfolio, calculate change
+                        delta += abs(target_weight - prev_value)
+            else:
+                # Non-rebalancing period: no trading
+                delta = 0
+            
+            exposure_delta.loc[date] = delta
+        
+        return exposure_delta
+    
+    @staticmethod
+    def calculate_gross_contribution(portfolio_growth: pd.DataFrame,
+                                    weights: List[float],
+                                    params: PortfolioParameters) -> pd.Series:
+        """
+        Step 4b: Calculate Gross Contribution
+        
+        Returns before transaction costs
+        """
+        gross_contribution = pd.Series(index=portfolio_growth.index, dtype=float)
+        
+        for i, date in enumerate(portfolio_growth.index):
+            total_contribution = 0
+            
+            for col_index in range(params.num_positions):
+                current_value = portfolio_growth.iloc[i, col_index]
+                
+                if i == 0:
+                    # First period: difference from initial weight
+                    contribution = current_value - weights[col_index]
+                elif i % params.rebalance_period == 0:
+                    # Rebalancing period: difference from reset weight
+                    contribution = current_value - weights[col_index]
                 else:
-                    return 'background-color: #fff3cd; color: #856404'  # Light yellow for equal
-        except:
-            pass
-        return ''
+                    # Regular period: difference from previous value
+                    prev_value = portfolio_growth.iloc[i - 1, col_index]
+                    contribution = current_value - prev_value
+                
+                total_contribution += contribution
+            
+            gross_contribution.loc[date] = total_contribution
+        
+        return gross_contribution
+    
+    @staticmethod
+    def calculate_net_contribution(gross_contribution: pd.Series,
+                                  exposure_delta: pd.Series,
+                                  rebalance_cost: float) -> pd.Series:
+        """
+        Step 4c: Calculate Net Contribution
+        
+        Net = Gross - (Exposure_Delta * Rebalance_Cost%)
+        """
+        transaction_costs = exposure_delta * (rebalance_cost / 100)
+        net_contribution = gross_contribution - transaction_costs
+        return net_contribution
+    
+    @staticmethod
+    def calculate_compounded_value(net_contribution: pd.Series) -> pd.Series:
+        """
+        Step 5: Track Compounded Performance
+        
+        Start with initial investment and compound using net contributions
+        """
+        compounded_values = []
+        value = Config.INITIAL_INVESTMENT
+        
+        for date, contribution in net_contribution.items():
+            value *= (1 + contribution / 100)
+            compounded_values.append(value)
+        
+        return pd.Series(compounded_values, index=net_contribution.index)
 
-    # Apply styling
-    styled_df = df_table.style.map(
-        style_cells, subset=[col for col in df_table.columns if col != 'Year'])
 
-    # Display the table with legend
-    st.markdown("**Legend:** T = Theoretical Strategy, A = Actual Returns")
+# ============================================================================
+# MAIN PORTFOLIO ENGINE
+# ============================================================================
+
+class PortfolioEngine:
+    """Main engine that orchestrates the entire portfolio calculation process"""
+    
+    def __init__(self, params: PortfolioParameters):
+        self.params = params
+        self.weights = WeightCalculator.calculate_position_weights(params)
+    
+    def calculate_portfolio_performance(self) -> Tuple[pd.Series, pd.DataFrame]:
+        """
+        Execute the complete 5-step methodology
+        Returns: (portfolio_value_series, portfolio_holdings)
+        """
+        # Step 0: Load data
+        DataLoader.check_required_files()
+        rank_df, price_df = DataLoader.load_data()
+        returns_df = DataLoader.calculate_returns(price_df)
+        
+        # Step 1: Generate Portfolio
+        portfolio = PortfolioGenerator.generate_portfolio(rank_df, self.params)
+        
+        # Step 2: Calculate Returns
+        returns_portfolio = PortfolioGenerator.map_returns_to_portfolio(
+            portfolio, returns_df
+        )
+        
+        # Step 3: Calculate Portfolio Growth
+        portfolio_growth = PortfolioCalculator.calculate_portfolio_growth(
+            returns_portfolio, self.weights, self.params
+        )
+        
+        # Step 4: Adjust for Rebalancing Costs
+        exposure_delta = PortfolioCalculator.calculate_exposure_delta(
+            portfolio, portfolio_growth, self.weights, self.params
+        )
+        
+        gross_contribution = PortfolioCalculator.calculate_gross_contribution(
+            portfolio_growth, self.weights, self.params
+        )
+        
+        net_contribution = PortfolioCalculator.calculate_net_contribution(
+            gross_contribution, exposure_delta, self.params.rebalance_cost
+        )
+        
+        # Step 5: Compute Compounded Growth
+        portfolio_value = PortfolioCalculator.calculate_compounded_value(
+            net_contribution
+        )
+        
+        return portfolio_value, portfolio
+    
+    def calculate_for_period(self, start_month: int, end_month: int) -> Optional[np.ndarray]:
+        """Calculate portfolio for a specific period (used in optimization)"""
+        try:
+            portfolio_value, _ = self.calculate_portfolio_performance()
+            
+            # Extract and normalize the period
+            max_idx = len(portfolio_value) - 1
+            start_idx = min(start_month, max_idx)
+            end_idx = min(end_month, max_idx)
+            
+            if start_idx > end_idx:
+                return None
+            
+            series = portfolio_value.iloc[start_idx:end_idx + 1].values
+            if len(series) > 0:
+                # Normalize to start at 100
+                series = series * 100 / series[0]
+            
+            return series
+            
+        except Exception as e:
+            print(f"Error calculating portfolio for period: {e}")
+            return None
+
+
+# ============================================================================
+# PERFORMANCE METRICS
+# ============================================================================
+
+class PerformanceMetrics:
+    """Calculate various performance metrics"""
+    
+    @staticmethod
+    def calculate_volatility(values: np.ndarray) -> float:
+        """Calculate annualized volatility from portfolio values"""
+        if len(values) < 2:
+            return 0.0
+        
+        # Calculate period returns
+        returns = []
+        for i in range(1, len(values)):
+            period_return = (values[i] / values[i-1] - 1)
+            returns.append(period_return)
+        
+        if not returns:
+            return 0.0
+        
+        # Calculate standard deviation and annualize
+        returns_std = np.std(returns, ddof=1)
+        annualized_vol = returns_std * np.sqrt(12) * 100  # Monthly to annual
+        
+        return annualized_vol
+    
+    @staticmethod
+    def calculate_rmse(strategy: np.ndarray, actual: np.ndarray) -> float:
+        """Calculate Root Mean Square Error between strategy and actual"""
+        if len(strategy) != len(actual) or len(strategy) == 0:
+            return float('inf')
+        
+        errors = []
+        for s, a in zip(strategy, actual):
+            if a != 0:
+                errors.append(((s - a) / a * 100) ** 2)
+            else:
+                errors.append((s - a) ** 2)
+        
+        return np.sqrt(np.mean(errors))
+    
+    @staticmethod
+    def calculate_cumulative_return(initial: float, final: float) -> float:
+        """Calculate cumulative return percentage"""
+        return ((final - initial) / initial) * 100
+    
+    @staticmethod
+    def calculate_annualized_return(initial: float, final: float, years: float) -> float:
+        """Calculate annualized return percentage"""
+        if years <= 0:
+            return 0.0
+        return ((final / initial) ** (1 / years) - 1) * 100
+
+
+# ============================================================================
+# OPTIMIZATION ENGINE
+# ============================================================================
+
+class OptimizationEngine:
+    """Handle parameter optimization to find best match with actual portfolio"""
+    
+    @staticmethod
+    def find_optimal_parameters(start_month: int, end_month: int, 
+                               rebalance_filter: str) -> Optional[dict]:
+        """
+        Find optimal parameters that minimize tracking error
+        """
+        # Get actual returns for comparison
+        actual_returns = DataLoader.get_actual_returns()
+        actual_values = [Config.INITIAL_INVESTMENT]
+        
+        for ret in actual_returns:
+            actual_values.append(actual_values[-1] * (1 + ret / 100))
+        
+        # Extract and normalize the period
+        max_idx = len(actual_values) - 1
+        start_idx = min(start_month, max_idx)
+        end_idx = min(end_month, max_idx)
+        
+        if start_idx > end_idx:
+            st.error("Invalid period selection")
+            return None
+        
+        actual_period = actual_values[start_idx:end_idx + 1]
+        if len(actual_period) > 0:
+            actual_period = [v * 100 / actual_period[0] for v in actual_period]
+        
+        # Define parameter search space
+        positions_range = list(range(5, 16))
+        cash_range = list(range(0, 31, 5))
+        rebalance_options = (['monthly', 'quarterly', 'semi-yearly'] 
+                           if rebalance_filter == 'any' 
+                           else [rebalance_filter])
+        cost_range = [0.0, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0]
+        
+        # Progress tracking
+        total_combinations = (len(positions_range) * len(cash_range) * 
+                            len(rebalance_options) * len(cost_range))
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        best_params = None
+        best_error = float('inf')
+        valid_count = 0
+        
+        # Grid search
+        for i, (pos, cash, reb, cost) in enumerate(
+            itertools.product(positions_range, cash_range, 
+                            rebalance_options, cost_range)
+        ):
+            status_text.text(
+                f"Testing {i+1}/{total_combinations}: "
+                f"pos={pos}, cash={cash}%, reb={reb}, cost={cost:.2f}%"
+            )
+            
+            # Test this parameter combination
+            params = PortfolioParameters(pos, cash, reb, cost)
+            engine = PortfolioEngine(params)
+            strategy_values = engine.calculate_for_period(start_month, end_month)
+            
+            if strategy_values is not None and len(strategy_values) == len(actual_period):
+                valid_count += 1
+                error = PerformanceMetrics.calculate_rmse(strategy_values, actual_period)
+                
+                if error < best_error:
+                    best_error = error
+                    best_params = {
+                        'num_positions': pos,
+                        'cash_percentage': cash,
+                        'rebalance_frequency': reb,
+                        'rebalance_cost': cost,
+                        'error': error,
+                        'strategy_values': strategy_values,
+                        'actual_values': actual_period
+                    }
+            
+            progress_bar.progress((i + 1) / total_combinations)
+        
+        progress_bar.empty()
+        status_text.empty()
+        
+        if valid_count == 0:
+            st.warning(f"No valid combinations found out of {total_combinations} tested.")
+        
+        return best_params
+
+
+# ============================================================================
+# VISUALIZATION
+# ============================================================================
+
+class Visualizer:
+    """Handle all chart and visualization creation"""
+    
+    @staticmethod
+    def create_comparison_chart(portfolio_value: pd.Series) -> Tuple[go.Figure, list]:
+        """Create main comparison chart between strategy and actual portfolio"""
+        actual_returns = DataLoader.get_actual_returns()
+        actual_values = [Config.INITIAL_INVESTMENT]
+        
+        for ret in actual_returns[:len(portfolio_value)]:
+            actual_values.append(actual_values[-1] * (1 + ret / 100))
+        
+        fig = go.Figure()
+        
+        # Strategy line
+        fig.add_trace(go.Scatter(
+            x=list(range(len(portfolio_value))),
+            y=portfolio_value.values,
+            mode="lines",
+            name="Strategy",
+            line=dict(width=2, color='#1f77b4')
+        ))
+        
+        # Actual line
+        fig.add_trace(go.Scatter(
+            x=list(range(len(actual_values[:len(portfolio_value)]))),
+            y=actual_values[:len(portfolio_value)],
+            mode="lines",
+            name="Actual",
+            line=dict(width=2, dash="dash", color='#ff7f0e')
+        ))
+        
+        fig.update_layout(
+            template="simple_white",
+            margin=dict(l=40, r=20, t=40, b=40),
+            xaxis_title="Months",
+            yaxis_title="Portfolio Value ($)",
+            height=500,
+        )
+        
+        return fig, actual_values
+    
+    @staticmethod
+    def create_optimization_chart(opt_result: dict) -> go.Figure:
+        """Create chart showing optimization results"""
+        x = list(range(len(opt_result['strategy_values'])))
+        
+        fig = go.Figure()
+        
+        fig.add_trace(go.Scatter(
+            x=x,
+            y=opt_result['strategy_values'],
+            mode='lines',
+            name='Optimal Strategy',
+            line=dict(color='green', width=2)
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=x,
+            y=opt_result['actual_values'],
+            mode='lines',
+            name='Actual',
+            line=dict(color='red', width=2, dash='dash')
+        ))
+        
+        fig.update_layout(
+            template='simple_white',
+            margin=dict(l=40, r=20, t=40, b=40),
+            xaxis_title="Months in Period",
+            yaxis_title="Normalized Value",
+            height=400
+        )
+        
+        return fig
+
+
+# ============================================================================
+# STREAMLIT UI
+# ============================================================================
+
+def setup_page():
+    """Configure Streamlit page settings"""
+    st.set_page_config(
+        page_title="Portfolio Strategy Analyzer",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+    
+    # Hide Streamlit branding
     st.markdown(
-        "🟢 Green = Strategy Outperformed | 🔴 Red = Strategy Underperformed | 🟡 Yellow = Equal Performance"
+        """
+        <style>
+          #MainMenu {visibility: hidden;}
+          footer {visibility: hidden;}
+          header {visibility: hidden;}
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
 
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
-else:
-    st.warning("No data available for comparison table")
 
-# Optimization Section
-st.markdown("---")
-st.subheader("🔍 Find Closest Match to the Actual Portfolio")
-st.markdown("Find the best parameters for a specific time period")
-o1, o2, o3, o4 = st.columns(4)
-start_month = o1.number_input("Start Month", 0, len(portfolio_value) - 1, 14)
-end_month = o2.number_input("End Month", 0, len(portfolio_value) - 1, 30)
-reb_filter = o3.selectbox("Rebalance Filter",
-                          ["any", "monthly", "quarterly", "semi-yearly"])
-run_opt = o4.button("Find Match", type="primary")
+def create_sidebar() -> PortfolioParameters:
+    """Create sidebar with parameter controls"""
+    st.sidebar.header("Portfolio Parameters")
+    
+    num_positions = st.sidebar.slider("Number of Positions", 5, 15, 15, 1)
+    cash_percentage = st.sidebar.slider("Cash Percentage (%)", 0, 50, 0, 1)
+    rebalance_frequency = st.sidebar.selectbox(
+        "Rebalance Frequency", 
+        ["monthly", "quarterly", "semi-yearly"], 
+        index=0
+    )
+    rebalance_cost = st.sidebar.slider(
+        "Rebalance Cost (%)",
+        0.0, 5.0, 2.00, 0.01,
+        format="%.2f"
+    )
+    
+    return PortfolioParameters(
+        num_positions, 
+        cash_percentage, 
+        rebalance_frequency, 
+        rebalance_cost
+    )
 
-if run_opt:
-    if end_month <= start_month:
-        st.error("End month must be after start month.")
+
+def display_metrics(portfolio_value: pd.Series, actual_values: list):
+    """Display performance metrics"""
+    st.markdown("---")
+    
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    
+    # Calculate values
+    strategy_final = portfolio_value.iloc[-1]
+    
+    if len(portfolio_value) < len(actual_values):
+        actual_final = actual_values[len(portfolio_value)]
     else:
-        with st.spinner(
-                "Optimizing parameters... This may take a few minutes."):
+        actual_final = actual_values[-1] if actual_values else 100.0
+    
+    strategy_return = PerformanceMetrics.calculate_cumulative_return(100, strategy_final)
+    actual_return = PerformanceMetrics.calculate_cumulative_return(100, actual_final)
+    outperformance = strategy_return - actual_return
+    
+    years = len(portfolio_value) / 12
+    annualized = PerformanceMetrics.calculate_annualized_return(100, strategy_final, years)
+    
+    strategy_vol = PerformanceMetrics.calculate_volatility(portfolio_value.values)
+    actual_vol = PerformanceMetrics.calculate_volatility(
+        actual_values[:len(portfolio_value)]
+    ) if actual_values else 0.0
+    
+    # Display metrics
+    c1.metric("Strategy Final", f"${strategy_final:.2f}", f"{strategy_return:+.1f}%")
+    c2.metric("Actual Final", f"${actual_final:.2f}", f"{actual_return:+.1f}%")
+    c3.metric("Outperformance", f"{outperformance:+.1f}%")
+    c4.metric("Annualized", f"{annualized:.1f}%")
+    c5.metric("Strategy Volatility", f"{strategy_vol:.1f}%")
+    c6.metric("Actual Volatility", f"{actual_vol:.1f}%")
+    
+    st.caption("💡 Volatility is calculated as the annualized standard deviation of monthly returns (std × √12)")
+
+
+def display_monthly_comparison(portfolio_value: pd.Series):
+    """Display monthly performance comparison table"""
+    st.markdown("---")
+    st.subheader("Monthly Performance Comparison")
+    
+    months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    years = ['2018', '2019', '2020', '2021', '2022']
+    
+    # Calculate strategy monthly returns
+    strategy_returns = []
+    for i in range(len(portfolio_value) - 1):
+        monthly_return = (portfolio_value.iloc[i + 1] / portfolio_value.iloc[i] - 1) * 100
+        strategy_returns.append(monthly_return)
+    
+    # Get actual returns
+    actual_returns = DataLoader.get_actual_returns()
+    
+    # Build table data
+    table_data = {}
+    month_idx = 0
+    
+    for year in years:
+        year_data = {'Year': year}
+        year_strategy = []
+        year_actual = []
+        
+        for month in months:
+            if month_idx < len(actual_returns) and month_idx < len(strategy_returns):
+                actual_ret = actual_returns[month_idx]
+                strategy_ret = strategy_returns[month_idx]
+                
+                year_strategy.append(strategy_ret)
+                year_actual.append(actual_ret)
+                
+                cell_value = f"T: {strategy_ret:.1f}%\nA: {actual_ret:.1f}%"
+                year_data[month] = cell_value
+                month_idx += 1
+            else:
+                year_data[month] = ""
+        
+        # Calculate yearly totals
+        if year_strategy:
+            strategy_yearly = (np.prod([1 + r/100 for r in year_strategy]) - 1) * 100
+            actual_yearly = Config.ACTUAL_YEARLY_RETURNS.get(year, 0.0)
+            year_data['Yearly Total'] = f"T: {strategy_yearly:.1f}%\nA: {actual_yearly:.1f}%"
+        
+        table_data[year] = year_data
+    
+    # Display table
+    if table_data:
+        df_table = pd.DataFrame(list(table_data.values()))
+        
+        def style_cells(val):
+            if not val or val == "":
+                return ''
             try:
-                opt = find_optimal_parameters(start_month, end_month,
-                                              reb_filter)
-                if opt:
-                    st.success("Optimal parameters found!")
-                    p1, p2 = st.columns(2)
-                    with p1:
-                        st.write("**Optimal Parameters**")
-                        st.write(f"- **Positions:** {opt['num_positions']}")
-                        st.write(f"- **Cash %:** {opt['cash_percentage']}%")
-                        st.write(
-                            f"- **Rebalance:** {opt['rebalance_frequency']}")
-                        st.write(f"- **Cost:** {opt['rebalance_cost']:.2f}%")
-                    with p2:
-                        st.write("**Performance**")
-                        st.write(f"- **Error (RMSE):** {opt['error']:.2f}%")
-                    st.plotly_chart(create_optimization_chart(opt),
-                                    use_container_width=True)
-                else:
-                    st.error("No valid combination found.")
-            except Exception as e:
-                st.error(f"Error during optimization: {str(e)}")
+                lines = val.split('\n')
+                if len(lines) == 2:
+                    theoretical = float(lines[0].split(': ')[1].replace('%', ''))
+                    actual = float(lines[1].split(': ')[1].replace('%', ''))
+                    diff = theoretical - actual
+                    
+                    if diff > 0:
+                        return 'background-color: #d4edda; color: #155724'
+                    elif diff < 0:
+                        return 'background-color: #f8d7da; color: #721c24'
+                    else:
+                        return 'background-color: #fff3cd; color: #856404'
+            except:
+                pass
+            return ''
+        
+        styled_df = df_table.style.map(
+            style_cells, 
+            subset=[col for col in df_table.columns if col != 'Year']
+        )
+        
+        st.markdown("**Legend:** T = Theoretical Strategy, A = Actual Returns")
+        st.markdown("🟢 Green = Outperformance | 🔴 Red = Underperformance | 🟡 Yellow = Equal")
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-# Position Weightings Display
-st.markdown("---")
-st.subheader("Position Weightings")
 
-# Calculate current weights based on sidebar parameters
-current_weights = calculate_position_weights(num_positions, cash_percentage)
+def display_optimization_section(portfolio_value: pd.Series):
+    """Display optimization section"""
+    st.markdown("---")
+    st.subheader("🔍 Find Closest Match to the Actual Portfolio")
+    st.markdown("Find the best parameters for a specific time period")
+    
+    o1, o2, o3, o4 = st.columns(4)
+    
+    start_month = o1.number_input("Start Month", 0, len(portfolio_value) - 1, 14)
+    end_month = o2.number_input("End Month", 0, len(portfolio_value) - 1, 30)
+    reb_filter = o3.selectbox("Rebalance Filter", 
+                              ["any", "monthly", "quarterly", "semi-yearly"])
+    run_opt = o4.button("Find Match", type="primary")
+    
+    if run_opt:
+        if end_month <= start_month:
+            st.error("End month must be after start month.")
+        else:
+            with st.spinner("Optimizing parameters... This may take a few minutes."):
+                try:
+                    opt_result = OptimizationEngine.find_optimal_parameters(
+                        start_month, end_month, reb_filter
+                    )
+                    
+                    if opt_result:
+                        st.success("Optimal parameters found!")
+                        
+                        p1, p2 = st.columns(2)
+                        with p1:
+                            st.write("**Optimal Parameters**")
+                            st.write(f"- **Positions:** {opt_result['num_positions']}")
+                            st.write(f"- **Cash %:** {opt_result['cash_percentage']}%")
+                            st.write(f"- **Rebalance:** {opt_result['rebalance_frequency']}")
+                            st.write(f"- **Cost:** {opt_result['rebalance_cost']:.2f}%")
+                        
+                        with p2:
+                            st.write("**Performance**")
+                            st.write(f"- **Error (RMSE):** {opt_result['error']:.2f}%")
+                        
+                        fig = Visualizer.create_optimization_chart(opt_result)
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.error("No valid combination found.")
+                        
+                except Exception as e:
+                    st.error(f"Error during optimization: {str(e)}")
 
-st.write("**Position Weightings:**")
-for i, weight in enumerate(current_weights):
-    st.write(f"Rank {i+1}: {weight:.2f}%")
 
-# Show cash percentage if applicable
-if cash_percentage > 0:
-    st.write(f"Cash: {cash_percentage:.2f}%")
+def display_position_weights(params: PortfolioParameters):
+    """Display current position weightings"""
+    st.markdown("---")
+    st.subheader("Position Weightings")
+    
+    weights = WeightCalculator.calculate_position_weights(params)
+    
+    st.write("**Position Weightings:**")
+    for i, weight in enumerate(weights):
+        st.write(f"Rank {i+1}: {weight:.2f}%")
+    
+    if params.cash_percentage > 0:
+        st.write(f"Cash: {params.cash_percentage:.2f}%")
+    
+    total_invested = sum(weights)
+    st.write(f"**Total Invested: {total_invested:.2f}%**")
 
-# Show total allocation
-total_invested = sum(current_weights)
-st.write(f"**Total Invested: {total_invested:.2f}%**")
 
-# Footer
-st.markdown("---")
-st.markdown("*Portfolio Strategy Analyzer - Built with Streamlit on Replit*")
+# ============================================================================
+# MAIN APPLICATION
+# ============================================================================
+
+def main():
+    """Main application entry point"""
+    # Setup
+    setup_page()
+    
+    # Header
+    st.title("Portfolio Strategy Analyzer")
+    st.markdown("Analyze and optimize portfolio strategies using historical data")
+    st.markdown("---")
+    
+    # Get parameters from sidebar
+    params = create_sidebar()
+    
+    # Calculate portfolio performance
+    try:
+        engine = PortfolioEngine(params)
+        portfolio_value, portfolio = engine.calculate_portfolio_performance()
+        
+        if portfolio_value is None:
+            st.error("Failed to calculate portfolio performance")
+            st.stop()
+            
+    except Exception as e:
+        st.error(f"Error calculating portfolio performance: {str(e)}")
+        st.stop()
+    
+    # Display main chart
+    fig, actual_values = Visualizer.create_comparison_chart(portfolio_value)
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Display metrics
+    display_metrics(portfolio_value, actual_values)
+    
+    # Display monthly comparison
+    display_monthly_comparison(portfolio_value)
+    
+    # Display optimization section
+    display_optimization_section(portfolio_value)
+    
+    # Display position weights
+    display_position_weights(params)
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("*Portfolio Strategy Analyzer - Built with Streamlit*")
+
+
+if __name__ == "__main__":
+    main()
