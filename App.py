@@ -85,23 +85,22 @@ def calculate_returns_from_prices(price_df):
 
 def calculate_position_weights(num_positions, cash_percentage):
     """Calculate position weights with linear decrease (returns percentages not decimals)"""
-    investable = 100.0 - cash_percentage
+    total_percentage = 100.0 - cash_percentage
     
     if num_positions <= 5:
-        top_weight = 0.3 * investable
+        highest_percentage = 0.3 * total_percentage
     else:
-        top_weight = 0.3 * investable - (num_positions - 5) * 0.02 * investable - (15 - num_positions)
+        # Adjusted formula to match reference code
+        highest_percentage = 0.3 * total_percentage - (num_positions - 5) * 0.02 * total_percentage - (15 - num_positions)
     
     if num_positions > 1:
-        # Calculate linear decrease
-        total_decrease = 2 * (top_weight * num_positions - investable)
-        decrease_per_position = total_decrease / (num_positions * (num_positions - 1))
-        
-        weights = [top_weight - i * decrease_per_position for i in range(num_positions)]
+        # Calculate common difference for arithmetic series
+        common_difference = (2 * (highest_percentage * num_positions) - 2 * total_percentage) / (num_positions * (num_positions - 1))
+        percentages = [highest_percentage - i * common_difference for i in range(num_positions)]
     else:
-        weights = [investable]
+        percentages = [total_percentage]
     
-    return weights  # Returns as percentages (e.g., 30.0 for 30%)
+    return percentages  # Returns as percentages (e.g., 30.0 for 30%)
 
 
 @st.cache_data
