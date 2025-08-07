@@ -290,7 +290,12 @@ def calculate_rebalancing_exposure(holdings: pd.DataFrame,
     """
     Step 4a: Calculate exposure delta (amount traded at each rebalancing)
     
-    This represents the total USD amount being traded when rebalancing
+    This represents the total percentage amount being traded when rebalancing.
+    
+    IMPORTANT: At rebalancing, we need to calculate:
+    1. What each position's value is BEFORE rebalancing (after natural growth)
+    2. What each position's target value should be (weight × total portfolio value)
+    3. The sum of absolute differences is the exposure delta
     """
     rebalance_period = get_rebalance_periods(config)
     exposure_delta = pd.Series(index=holdings.index, dtype=float)
@@ -302,29 +307,36 @@ def calculate_rebalancing_exposure(holdings: pd.DataFrame,
             
         elif i % rebalance_period == 0:
             # Rebalancing period: calculate total trading amount
-            delta = 0.0
+            
+            # Get the total portfolio value BEFORE rebalancing
+            # This is the sum of all position values after growth
+            total_portfolio_value = sum(growth.iloc[i - 1])
             
             # Get current and previous holdings
             current_holdings = holdings.iloc[i].tolist()
             previous_holdings = holdings.iloc[i - 1].tolist()
             
-            # Calculate delta for each position
-            for j, target_weight in enumerate(weights):
-                current_stock = current_holdings[j]
+            # Calculate the exposure delta
+            delta = 0.0
+            
+            for j in range(config.num_positions):
+                # What stock will be in position j after rebalancing
+                stock_after_rebal = current_holdings[j]
                 
-                # Find previous value of this stock
-                prev_value = None
-                if current_stock in previous_holdings:
-                    prev_position = previous_holdings.index(current_stock)
-                    prev_value = growth.iloc[i - 1, prev_position]
+                # Find this stock's current value (if it was in portfolio)
+                current_value = 0.0
+                if stock_after_rebal in previous_holdings:
+                    prev_position = previous_holdings.index(stock_after_rebal)
+                    # Get its value after growth but before rebalancing
+                    current_value = growth.iloc[i - 1, prev_position]
                 
-                # Calculate trading amount
-                if prev_value is None:
-                    # Stock is new to portfolio
-                    delta += target_weight
-                else:
-                    # Stock was in portfolio
-                    delta += abs(target_weight - prev_value)
+                # Target value for this position after rebalancing
+                # This is weight × total portfolio value
+                target_value = weights[j]  # Already in percentage form
+                
+                # Add absolute difference to exposure delta
+                delta += abs(target_value - current_value)
+                
         else:
             # Non-rebalancing period: no trading
             delta = 0.0
