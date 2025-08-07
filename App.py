@@ -241,9 +241,12 @@ def calculate_position_growth(portfolio_returns: pd.DataFrame,
     Step 3: Calculate portfolio growth over time
     
     Key Logic:
-    - At rebalancing: reset positions to target weights
+    - At rebalancing: reset positions to target weights × current total portfolio value
     - Between rebalancing: positions grow with their returns
     - Track value of each position as percentage
+    
+    CRITICAL: This function tracks position values but does NOT actually rebalance.
+    It assumes positions grow naturally, and we'll calculate rebalancing effects separately.
     """
     rebalance_period = get_rebalance_periods(config)
     num_periods = len(portfolio_returns)
@@ -257,25 +260,49 @@ def calculate_position_growth(portfolio_returns: pd.DataFrame,
     )
     
     for i, date in enumerate(portfolio_returns.index):
-        if i % rebalance_period == 0:
-            # Rebalancing period: reset to target weights
+        if i == 0:
+            # INITIAL: Start with target weights (as percentages)
             current_values = weights.copy()
-        else:
-            # No rebalancing: use previous values
-            current_values = growth.iloc[i - 1].tolist()
-        
-        # Apply returns for this period
-        new_values = []
-        for j in range(num_positions):
-            ret = portfolio_returns.iloc[i, j]
-            if pd.isna(ret):
-                ret = 0.0
             
-            # Growth formula: V(t) = V(t-1) * (1 + r/100)
-            new_value = current_values[j] * (1 + ret / 100)
-            new_values.append(new_value)
+        elif i % rebalance_period == 0:
+            # REBALANCING PERIOD:
+            # First, let positions grow naturally with returns
+            prev_values = growth.iloc[i - 1].tolist()
+            grown_values = []
+            for j in range(num_positions):
+                ret = portfolio_returns.iloc[i, j]
+                if pd.isna(ret):
+                    ret = 0.0
+                # Natural growth: V(t) = V(t-1) * (1 + r/100)
+                grown_value = prev_values[j] * (1 + ret / 100)
+                grown_values.append(grown_value)
+            
+            # Calculate total portfolio value after growth
+            total_after_growth = sum(grown_values)
+            
+            # NOW REBALANCE: Reset to target weights × total portfolio value
+            # But since we're tracking percentages, and total should sum to ~100 - cash%
+            # We need to normalize
+            current_values = []
+            for j in range(num_positions):
+                # Each position gets its target weight
+                # But we need to maintain the total portfolio value
+                rebalanced_value = weights[j] * (total_after_growth / (100 - config.cash_percentage))
+                current_values.append(rebalanced_value)
+                
+        else:
+            # NO REBALANCING: Just apply returns to previous values
+            prev_values = growth.iloc[i - 1].tolist()
+            current_values = []
+            for j in range(num_positions):
+                ret = portfolio_returns.iloc[i, j]
+                if pd.isna(ret):
+                    ret = 0.0
+                # Natural growth: V(t) = V(t-1) * (1 + r/100)
+                new_value = prev_values[j] * (1 + ret / 100)
+                current_values.append(new_value)
         
-        growth.iloc[i] = new_values
+        growth.iloc[i] = current_values
     
     return growth
 
