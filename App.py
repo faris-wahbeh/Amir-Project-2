@@ -77,8 +77,9 @@ def load_market_data() -> MarketData:
     rank_df = pd.read_csv('Rank.csv', index_col=0, parse_dates=True, dayfirst=True)
     price_df = pd.read_csv('Prices.csv', index_col=0, parse_dates=True, dayfirst=True)
     
-    # Calculate returns (as percentages)
-    returns_df = price_df.pct_change(fill_method=None).fillna(0) * 100
+    # Calculate returns as decimals (0.01 for 1% return)
+    # The older code expects returns in decimal form, not percentage
+    returns_df = price_df.pct_change(fill_method=None).fillna(0)
     
     return MarketData(rank_df, price_df, returns_df)
 
@@ -181,8 +182,9 @@ def calculate_portfolio_growth(num_positions: int, cash_percentage: float,
             # Handle different return formats
             if isinstance(return_value, str):
                 return_value = float(return_value.strip('%')) / 100
-            elif return_value is None:
+            elif return_value is None or pd.isna(return_value):
                 return_value = 0
+            # return_value is already in decimal form (0.01 for 1%) from load_market_data
             
             # Apply return to current percentage
             current_growth.append(current_percentages[col_index] * (1 + return_value))
