@@ -674,7 +674,7 @@ def display_performance_metrics(portfolio_value: pd.Series, actual_values: List)
 def display_monthly_comparison_table(portfolio_value: pd.Series):
     """Display monthly performance comparison table"""
     st.markdown("---")
-    st.subheader("Monthly Performance Comparison")
+    st.subheader("MoM Growth")
     
     # Calculate monthly returns
     strategy_returns = []
