@@ -634,7 +634,7 @@ def create_parameter_sidebar() -> PortfolioConfig:
     )
     rebalance_cost = st.sidebar.slider(
         "Rebalance Cost (%)",
-        0.0, 5.0, 3.4, 0.01,
+        0.0, 5.0, 2.0, 0.01,
         format="%.2f"
     )
     
