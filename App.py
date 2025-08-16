@@ -626,7 +626,7 @@ def create_parameter_sidebar() -> PortfolioConfig:
     st.sidebar.header("Portfolio Parameters")
     
     num_positions = st.sidebar.slider("Number of Positions", 5, 15, 10, 1)
-    cash_percentage = st.sidebar.slider("Cash Percentage (%)", 0, 50, 8, 1)
+    cash_percentage = st.sidebar.slider("Cash Percentage (%)", 0, 50, 0, 1)
     rebalance_frequency = st.sidebar.selectbox(
         "Rebalance Frequency",
         ["monthly", "quarterly", "semi-yearly"],
