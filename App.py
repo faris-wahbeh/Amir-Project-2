@@ -1,6 +1,5 @@
 
-# app.py - Portfolio Strategy Analyzer with Backend Matching Older Code
-# Backend rewritten to match exact methodology from reference implementation
+# app.py - Portfolio Strategy Analyzer
 
 import streamlit as st
 import pandas as pd
@@ -79,7 +78,7 @@ def load_market_data() -> MarketData:
     price_df = pd.read_csv('Prices.csv', index_col=0, parse_dates=True, dayfirst=True)
     
     # Calculate returns as decimals (0.01 for 1% return)
-    # The older code expects returns in decimal form, not percentage
+ 
     returns_df = price_df.pct_change(fill_method=None).fillna(0)
     
     return MarketData(rank_df, price_df, returns_df)
