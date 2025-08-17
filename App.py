@@ -97,7 +97,7 @@ def get_actual_portfolio_returns() -> List[float]:
 def calculate_position_percentages(num_positions: int, cash_percentage: float) -> List[float]:
     """
     Calculate position weights using arithmetic series
-    Matches the older code's calculate_position_percentages function exactly
+   
     """
     total_percentage = 100 - cash_percentage
     
@@ -119,7 +119,6 @@ def calculate_position_percentages(num_positions: int, cash_percentage: float) -
 def generate_portfolio(number_of_positions: int, rebalance_frequency: str, rank_data: pd.DataFrame) -> pd.DataFrame:
     """
     Generate portfolio holdings based on rank data
-    Matches the older code's generate_portfolio function exactly
     """
     frequency_mapping = {'monthly': 1, 'quarterly': 3, 'semi-yearly': 6}
     rebalance_period = frequency_mapping[rebalance_frequency]
@@ -136,7 +135,6 @@ def generate_portfolio(number_of_positions: int, rebalance_frequency: str, rank_
 def generate_returns_portfolio(portfolio: pd.DataFrame, returns_data: pd.DataFrame) -> pd.DataFrame:
     """
     Map returns to portfolio holdings
-    Matches the older code's generate_returns_portfolio function exactly
     """
     returns_portfolio = pd.DataFrame(index=portfolio.index, columns=portfolio.columns)
     portfolio_dates = portfolio.index
@@ -160,7 +158,6 @@ def calculate_portfolio_growth(num_positions: int, cash_percentage: float,
                               returns_portfolio: pd.DataFrame, rebalance_frequency: str) -> pd.DataFrame:
     """
     Calculate portfolio growth over time
-    Matches the older code's calculate_portfolio_growth function exactly
     """
     position_percentages = calculate_position_percentages(num_positions, cash_percentage)
     portfolio_growth = pd.DataFrame(index=returns_portfolio.index, columns=returns_portfolio.columns)
@@ -197,7 +194,6 @@ def rank_and_exposure_delta(num_positions: int, cash_percentage: float, portfoli
                            portfolio_growth: pd.DataFrame, rebalance_frequency: str) -> pd.Series:
     """
     Calculate exposure delta at each rebalancing
-    Matches the older code's rank_and_exposure_delta function exactly
     """
     reset_percentages = calculate_position_percentages(num_positions, cash_percentage)
     summed_exposure_delta = pd.Series(index=portfolio.index, name='Summed Exposure Delta')
@@ -241,7 +237,6 @@ def calculate_gross_contribution(num_positions: int, cash_percentage: float,
                                 portfolio_growth: pd.DataFrame, rebalance_frequency: str) -> pd.Series:
     """
     Calculate gross contribution (before transaction costs)
-    Matches the older code's calculate_gross_contribution function exactly
     """
     reset_percentages = calculate_position_percentages(num_positions, cash_percentage)
     gross_contribution = pd.DataFrame(index=portfolio_growth.index, columns=portfolio_growth.columns)
@@ -288,7 +283,6 @@ def calculate_compounded_growth(net_contribution: pd.Series,
                                end_date: Optional[pd.Timestamp] = None) -> pd.Series:
     """
     Compound portfolio value over time
-    Matches the older code's calculate_compounded_growth function
     """
     # Filter to date range if specified
     if start_date and end_date:
@@ -316,7 +310,7 @@ def calculate_compounded_growth(net_contribution: pd.Series,
 
 def execute_portfolio_strategy(config: PortfolioConfig) -> Tuple[pd.Series, pd.DataFrame, Dict]:
     """
-    Execute the complete portfolio methodology using the older code's approach
+    Execute the complete portfolio methodology
     
     Returns: (portfolio_value_series, portfolio_holdings, debug_info)
     """
