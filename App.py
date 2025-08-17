@@ -91,7 +91,7 @@ def get_actual_portfolio_returns() -> List[float]:
     return returns
 
 # ============================================================================
-# CORE FUNCTIONS - MATCHING OLDER CODE EXACTLY
+# CORE FUNCTIONS
 # ============================================================================
 
 def calculate_position_percentages(num_positions: int, cash_percentage: float) -> List[float]:
