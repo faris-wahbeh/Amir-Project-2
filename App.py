@@ -272,7 +272,6 @@ def calculate_net_contribution(gross_contribution: pd.Series, rank_exposure_delt
                               rebalance_cost: float) -> pd.Series:
     """
     Calculate net contribution (after transaction costs)
-    Matches the older code's calculate_net_contribution function exactly
     """
     rebalance_costs = rank_exposure_delta.map(lambda x: x * (rebalance_cost) / 100)
     net_contribution = gross_contribution - rebalance_costs
