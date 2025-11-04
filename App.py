@@ -717,6 +717,9 @@ def display_monthly_comparison_table(portfolio_value: pd.Series):
        
         table_data.append(year_row)
    
+    # Display table with styling
+    df = pd.DataFrame(table_data)
+   
     def style_cell(val):
         if not val or '\n' not in val:
             return ''
