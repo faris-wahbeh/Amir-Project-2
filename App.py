@@ -687,7 +687,7 @@ def display_monthly_comparison_table(portfolio_value: pd.Series):
     table_data = []
     month_idx = 0
    
-    for year in years:
+    for year_num, year in enumerate(years):
         year_row = {'Year': year}
         year_strategy = []
         year_actual = []
@@ -706,13 +706,16 @@ def display_monthly_comparison_table(portfolio_value: pd.Series):
         # Yearly total
         if year_strategy:
             s_yearly = (np.prod([1 + r/100 for r in year_strategy]) - 1) * 100
+            
+            # FIX: For the first year, include the initial return from $100 to portfolio_value[0]
+            if year_num == 0:
+                initial_return = (portfolio_value.iloc[0] / 100) - 1
+                s_yearly = ((1 + initial_return) * (1 + s_yearly/100) - 1) * 100
+            
             a_yearly = ACTUAL_YEARLY_RETURNS.get(year, 0.0)
             year_row['Yearly Total'] = f"T: {s_yearly:.1f}%\nA: {a_yearly:.1f}%"
        
         table_data.append(year_row)
-   
-    # Display table with styling
-    df = pd.DataFrame(table_data)
    
     def style_cell(val):
         if not val or '\n' not in val:
