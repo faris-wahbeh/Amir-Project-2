@@ -669,12 +669,6 @@ def display_monthly_comparison_table(portfolio_value: pd.Series):
    
     # Calculate monthly returns
     strategy_returns = []
-    
-    # FIX: Add the first month's return (currently missing!)
-    first_return = (portfolio_value.iloc[0] / 100 - 1) * 100
-    strategy_returns.append(first_return)
-    
-    # Then calculate the rest as before
     for i in range(len(portfolio_value) - 1):
         ret = (portfolio_value.iloc[i + 1] / portfolio_value.iloc[i] - 1) * 100
         strategy_returns.append(ret)
