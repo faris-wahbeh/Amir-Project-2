@@ -650,12 +650,16 @@ def display_performance_metrics(portfolio_value: pd.Series, actual_values: List)
     strategy_final = portfolio_value.iloc[-1]
     actual_final = actual_values[min(len(portfolio_value), len(actual_values)-1)]
    
+    # FIX: Calculate total returns from true initial investment of $100
+    strategy_total_return = ((strategy_final / 100) - 1) * 100
+    actual_total_return = ((actual_final / 100) - 1) * 100
+   
     c1.metric("Strategy Final", f"${strategy_final:.2f}",
-             f"{strategy_metrics['total_return']:+.1f}%")
+             f"{strategy_total_return:+.1f}%")  # Changed this line
     c2.metric("Actual Final", f"${actual_final:.2f}",
-             f"{actual_metrics['total_return']:+.1f}%")
+             f"{actual_total_return:+.1f}%")  # Changed this line
     c3.metric("Outperformance",
-             f"{strategy_metrics['total_return'] - actual_metrics['total_return']:+.1f}%")
+             f"{strategy_total_return - actual_total_return:+.1f}%")  # Changed this line
     c4.metric("Annualized", f"{strategy_metrics['annualized_return']:.1f}%")
     c5.metric("Strategy Volatility", f"{strategy_metrics['volatility']:.1f}%")
     c6.metric("Actual Volatility", f"{actual_metrics['volatility']:.1f}%")
